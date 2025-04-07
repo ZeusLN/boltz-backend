@@ -1,5 +1,6 @@
 use crate::db::models::WebHookState;
 use crate::lightning::cln::ReplyBlindedPath;
+use crate::types;
 use crate::webhook::WebHookCallData;
 use crate::webhook::caller::{CallResult, Caller, Config, Hook, HookState};
 use crate::webhook::types::InvoiceRequestCallData;
@@ -14,35 +15,52 @@ use tokio_util::sync::CancellationToken;
 const NAME: &str = "BOLT12 invoice";
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct InvoiceHook {
-    pub url: String,
+pub struct InvoiceHook<T: types::Bool> {
     pub invoice_request: String,
     pub reply_blinded_path: Option<ReplyBlindedPath>,
+
+    url: Option<String>,
+
+    phantom: std::marker::PhantomData<T>,
 }
 
 #[derive(Clone)]
 pub struct InvoiceHookState {
     // Invoice requests time out quickly, so we don't need to store them in the database
-    to_retry: Arc<DashMap<u64, InvoiceHook>>,
+    to_retry: Arc<DashMap<u64, InvoiceHook<types::True>>>,
 }
 
 #[derive(Clone)]
 pub struct InvoiceCaller {
-    caller: Caller<InvoiceHook, InvoiceHookState>,
+    caller: Caller<InvoiceHook<types::True>, InvoiceHookState>,
 }
 
-impl InvoiceHook {
-    pub fn new(
-        invoice_request: &[u8],
-        url: String,
-        reply_blinded_path: Option<ReplyBlindedPath>,
-    ) -> Self {
+impl InvoiceHook<types::False> {
+    pub fn new(invoice_request: &[u8], reply_blinded_path: Option<ReplyBlindedPath>) -> Self {
         let invoice_request = hex::encode(invoice_request);
         Self {
             invoice_request: invoice_request.clone(),
             reply_blinded_path,
-            url,
+            url: None,
+            phantom: std::marker::PhantomData,
         }
+    }
+}
+
+impl<T: types::Bool> InvoiceHook<T> {
+    pub fn with_url(self, url: String) -> InvoiceHook<types::True> {
+        InvoiceHook {
+            url: Some(url),
+            invoice_request: self.invoice_request,
+            reply_blinded_path: self.reply_blinded_path,
+            phantom: std::marker::PhantomData,
+        }
+    }
+
+    pub fn id(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.invoice_request.hash(&mut hasher);
+        hasher.finish()
     }
 
     pub fn respond_with_onion(&self) -> bool {
@@ -50,17 +68,15 @@ impl InvoiceHook {
     }
 }
 
-impl Hook for InvoiceHook {
+impl Hook for InvoiceHook<types::True> {
     type Id = u64;
 
     fn id(&self) -> Self::Id {
-        let mut hasher = DefaultHasher::new();
-        self.invoice_request.hash(&mut hasher);
-        hasher.finish()
+        self.id()
     }
 
     fn url(&self) -> String {
-        self.url.clone()
+        self.url.clone().unwrap()
     }
 }
 
@@ -72,12 +88,16 @@ impl InvoiceHookState {
     }
 }
 
-impl HookState<InvoiceHook> for InvoiceHookState {
-    fn should_be_skipped(&self, _hook: &InvoiceHook, _params: &WebHookCallData) -> bool {
+impl HookState<InvoiceHook<types::True>> for InvoiceHookState {
+    fn should_be_skipped(
+        &self,
+        _hook: &InvoiceHook<types::True>,
+        _params: &WebHookCallData,
+    ) -> bool {
         false
     }
 
-    fn get_by_state(&self, state: WebHookState) -> Result<Vec<InvoiceHook>> {
+    fn get_by_state(&self, state: WebHookState) -> Result<Vec<InvoiceHook<types::True>>> {
         if state != WebHookState::Failed {
             return Ok(Vec::new());
         }
@@ -85,7 +105,7 @@ impl HookState<InvoiceHook> for InvoiceHookState {
         Ok(self.to_retry.iter().map(|e| e.value().clone()).collect())
     }
 
-    fn get_retry_data(&self, hook: &InvoiceHook) -> Result<Option<WebHookCallData>> {
+    fn get_retry_data(&self, hook: &InvoiceHook<types::True>) -> Result<Option<WebHookCallData>> {
         Ok(Some(WebHookCallData::InvoiceRequest(
             InvoiceRequestCallData {
                 invoice_request: hook.invoice_request.clone(),
@@ -93,7 +113,7 @@ impl HookState<InvoiceHook> for InvoiceHookState {
         )))
     }
 
-    fn set_state(&self, hook: &InvoiceHook, state: WebHookState) -> Result<()> {
+    fn set_state(&self, hook: &InvoiceHook<types::True>, state: WebHookState) -> Result<()> {
         if state == WebHookState::Failed {
             self.to_retry.insert(hook.id(), hook.clone());
         } else {
@@ -120,11 +140,11 @@ impl InvoiceCaller {
         self.caller.start().await;
     }
 
-    pub fn subscribe_successful_calls(&self) -> Receiver<(InvoiceHook, Vec<u8>)> {
+    pub fn subscribe_successful_calls(&self) -> Receiver<(InvoiceHook<types::True>, Vec<u8>)> {
         self.caller.subscribe_successful_calls()
     }
 
-    pub async fn call(&self, hook: InvoiceHook) -> Result<CallResult> {
+    pub async fn call(&self, hook: InvoiceHook<types::True>) -> Result<CallResult> {
         let res = self
             .caller
             .call_webhook(

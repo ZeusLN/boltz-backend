@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use async_tungstenite::tokio::accept_async;
 use async_tungstenite::tungstenite::Message;
+use dashmap::{DashMap, DashSet};
 use futures::{SinkExt, StreamExt};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::error::Error;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
@@ -13,6 +16,10 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::api::ws::Config;
 use crate::api::ws::types::SwapStatus;
+use crate::types;
+use crate::webhook::invoice_caller::InvoiceHook;
+
+use super::OfferSubscriptions;
 
 const PING_INTERVAL_SECS: u64 = 15;
 const ACTIVITY_CHECK_INTERVAL_SECS: u64 = 60;
@@ -24,11 +31,17 @@ pub trait SwapInfos {
     async fn fetch_status_info(&self, ids: &[String]);
 }
 
-struct WsConnectionGuard;
+struct WsConnectionGuard {
+    connection_id: u64,
+    offer_subscriptions: OfferSubscriptions,
+}
 
 impl Drop for WsConnectionGuard {
     fn drop(&mut self) {
         trace!("Closing socket");
+
+        self.offer_subscriptions
+            .connection_dropped(self.connection_id);
 
         #[cfg(feature = "metrics")]
         metrics::gauge!(crate::metrics::WEBSOCKET_OPEN_COUNT).decrement(1);
@@ -44,6 +57,8 @@ struct ErrorResponse {
 enum SubscriptionChannel {
     #[serde(rename = "swap.update")]
     SwapUpdate,
+    #[serde(rename = "invoice.request")]
+    InvoiceRequest,
 }
 
 #[derive(Deserialize, Serialize, Debug, PartialEq)]
@@ -114,6 +129,8 @@ pub struct Status<S> {
 
     swap_infos: S,
     swap_status_update_tx: tokio::sync::broadcast::Sender<Vec<SwapStatus>>,
+
+    offer_subscriptions: OfferSubscriptions,
 }
 
 impl<S> Status<S>
@@ -125,11 +142,13 @@ where
         config: Config,
         swap_infos: S,
         swap_status_update_tx: tokio::sync::broadcast::Sender<Vec<SwapStatus>>,
+        offer_subscriptions: OfferSubscriptions,
     ) -> Self {
         Status {
             swap_infos,
             cancellation_token,
             swap_status_update_tx,
+            offer_subscriptions,
             address: format!("{}:{}", config.host, config.port),
         }
     }
@@ -183,7 +202,12 @@ where
         #[cfg(feature = "metrics")]
         metrics::gauge!(crate::metrics::WEBSOCKET_OPEN_COUNT).increment(1);
 
-        let _guard = WsConnectionGuard;
+        let connection_id = self.get_connection_id();
+
+        let _guard = WsConnectionGuard {
+            connection_id,
+            offer_subscriptions: self.offer_subscriptions.clone(),
+        };
 
         let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
         let mut activity_check_interval =
@@ -212,7 +236,7 @@ where
                             Message::Text(msg) => {
                                 last_activity = Instant::now();
 
-                                let res = match self.handle_message(&mut subscribed_ids, msg.as_ref()).await {
+                                let res = match self.handle_message(connection_id, &mut subscribed_ids, msg.as_ref()).await {
                                     Ok(res) => res.map(|res| serde_json::to_string(&res)),
                                     Err(res) => Some(serde_json::to_string(&res)),
                                 };
@@ -222,6 +246,7 @@ where
                                         Ok(res) => {
                                             if let Err(err) = ws_sender.send(Message::text(res)).await {
                                                 trace!("Could not send message: {}", err);
+                                                break;
                                             }
                                         },
                                         Err(err) => {
@@ -314,6 +339,7 @@ where
 
     async fn handle_message(
         &self,
+        connection_id: u64,
         subscribed_ids: &mut HashSet<String>,
         msg: &[u8],
     ) -> Result<Option<WsResponse>, ErrorResponse> {
@@ -354,6 +380,19 @@ where
                         channel: SubscriptionChannel::SwapUpdate,
                     })))
                 }
+                SubscriptionChannel::InvoiceRequest => {
+                    self.offer_subscriptions
+                        .offers_subscribed(connection_id, &sub.args);
+
+                    Ok(Some(WsResponse::Subscribe(SubscribeResponse {
+                        timestamp: match get_timestamp() {
+                            Some(time) => time,
+                            None => return Ok(None),
+                        },
+                        args: sub.args,
+                        channel: SubscriptionChannel::InvoiceRequest,
+                    })))
+                }
             },
             WsRequest::Unsubscribe(unsub) => {
                 for id in &unsub.args {
@@ -370,6 +409,17 @@ where
                 })))
             }
             WsRequest::Ping => Ok(Some(WsResponse::Pong)),
+        }
+    }
+
+    fn get_connection_id(&self) -> u64 {
+        let mut rng = rand::rng();
+
+        loop {
+            let id = rng.random();
+            if !self.offer_subscriptions.connection_id_known(id) {
+                return id;
+            }
         }
     }
 

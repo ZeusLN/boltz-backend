@@ -5,8 +5,9 @@ use crate::lightning::cln::cln_rpc::{GetinfoRequest, InjectonionmessageRequest};
 use crate::lightning::cln::hold::hold_rpc::onion_message::ReplyBlindedPath;
 use crate::lightning::cln::hold::hold_rpc::{GetInfoRequest, OnionMessageResponse};
 use crate::lightning::invoice::Invoice;
+use crate::types;
 use crate::wallet;
-use crate::webhook::caller::{Hook, validate_url};
+use crate::webhook::caller::validate_url;
 use crate::webhook::invoice_caller::{InvoiceCaller, InvoiceHook};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -118,7 +119,7 @@ impl Hold {
         })
     }
 
-    pub fn add_offer(&self, offer: String, url: String) -> Result<()> {
+    pub fn add_offer(&self, offer: String, url: Option<String>) -> Result<()> {
         let signer = Self::prepare_offer(self.network, &offer, &url)?;
         if self.offer_helper.get_by_signer(&signer)?.is_some() {
             return Err(anyhow!(
@@ -137,7 +138,7 @@ impl Hold {
     }
 
     pub fn update_offer(&self, offer: String, url: String, signature: &[u8]) -> Result<()> {
-        let signer = Self::prepare_offer(self.network, &offer, &url)?;
+        let signer = Self::prepare_offer(self.network, &offer, &Some(url.clone()))?;
         if self.offer_helper.get_by_signer(&signer)?.is_none() {
             return Err(anyhow!(
                 "no offer for this signing public key was registered"
@@ -189,33 +190,37 @@ impl Hold {
         let mut request_bytes = vec![];
         request.write(&mut request_bytes)?;
 
-        let hook = InvoiceHook::new(&request_bytes, offer.url, None);
+        let hook = InvoiceHook::new(&request_bytes, None);
         let hook_id = hook.id();
 
-        let mut receiver = self.invoice_caller.subscribe_successful_calls();
-        self.invoice_caller.call(hook).await?;
+        if let Some(url) = offer.url {
+            let mut receiver = self.invoice_caller.subscribe_successful_calls();
+            self.invoice_caller.call(hook.with_url(url)).await?;
 
-        // Wait for a response on the receiver or timeout after 30 seconds
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
-        tokio::pin!(timeout);
+            // Wait for a response on the receiver or timeout after 30 seconds
+            let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
+            tokio::pin!(timeout);
 
-        loop {
-            tokio::select! {
-                response = receiver.recv() => {
-                    match response {
-                        Ok((received_hook, invoice_bytes)) => {
-                            if received_hook.id() == hook_id {
-                                let res: InvoiceRequestResponse = serde_json::from_slice(&invoice_bytes)?;
-                                return Ok(res.invoice);
-                            }
-                        },
-                        Err(e) => return Err(anyhow!("failed to receive Webhook response: {}", e)),
+            loop {
+                tokio::select! {
+                    response = receiver.recv() => {
+                        match response {
+                            Ok((received_hook, invoice_bytes)) => {
+                                if received_hook.id() == hook_id {
+                                    let res: InvoiceRequestResponse = serde_json::from_slice(&invoice_bytes)?;
+                                    return Ok(res.invoice);
+                                }
+                            },
+                            Err(e) => return Err(anyhow!("failed to receive Webhook response: {}", e)),
+                        }
+                    },
+                    _ = &mut timeout => {
+                        return Err(anyhow!("timeout waiting for invoice response"));
                     }
-                },
-                _ = &mut timeout => {
-                    return Err(anyhow!("timeout waiting for invoice response"));
                 }
             }
+        } else {
+            todo!()
         }
     }
 
@@ -304,18 +309,18 @@ impl Hold {
                                 }
                             };
 
-                        // When it's our offer, we resolve the hook
-                        response_msg(msg.id, HookAction::Resolve).await;
-                        if let Err(error) = self_cp
-                            .invoice_caller
-                            .call(InvoiceHook::new(
-                                &invoice_request,
-                                offer.url,
-                                Some(reply_blinded_path),
-                            ))
-                            .await
-                        {
-                            warn!("Sending BOLT12 invoice Webhook failed: {}", error);
+                        let hook = InvoiceHook::new(&invoice_request, Some(reply_blinded_path));
+
+                        if let Some(url) = offer.url {
+                            // When it's our offer, we resolve the hook
+                            response_msg(msg.id, HookAction::Resolve).await;
+                            if let Err(error) =
+                                self_cp.invoice_caller.call(hook.with_url(url)).await
+                            {
+                                warn!("Sending BOLT12 invoice Webhook failed: {}", error);
+                            }
+                        } else {
+                            todo!()
                         }
                     }
                     Err(err) => {
@@ -338,7 +343,7 @@ impl Hold {
     async fn handle_response(
         &mut self,
         our_pubkey: PublicKey,
-        hook: InvoiceHook,
+        hook: InvoiceHook<types::True>,
         res: &[u8],
     ) -> Result<()> {
         let reply_blinded_path = match hook.reply_blinded_path.clone() {
@@ -375,9 +380,15 @@ impl Hold {
         self.offer_helper.get_by_signer(&signing_pubkey.serialize())
     }
 
-    fn prepare_offer(network: wallet::Network, offer: &str, url: &str) -> Result<Vec<u8>> {
-        if let Some(err) = validate_url(url, network == wallet::Network::Regtest) {
-            return Err(anyhow!("invalid URL: {}", err));
+    fn prepare_offer(
+        network: wallet::Network,
+        offer: &str,
+        url: &Option<String>,
+    ) -> Result<Vec<u8>> {
+        if let Some(url) = url {
+            if let Some(err) = validate_url(url, network == wallet::Network::Regtest) {
+                return Err(anyhow!("invalid URL: {}", err));
+            }
         }
 
         let decoded = match crate::lightning::invoice::decode(network, offer)? {

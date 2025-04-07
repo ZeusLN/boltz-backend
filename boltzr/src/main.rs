@@ -28,6 +28,7 @@ mod notifications;
 mod service;
 mod swap;
 mod tracing_setup;
+mod types;
 mod utils;
 mod wallet;
 mod webhook;
