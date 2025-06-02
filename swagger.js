@@ -8,7 +8,7 @@ const options = {
   definition: {
     openapi: '3.0.0',
     info: {
-      title: 'Boltz API',
+      title: 'ZEUS Swaps API',
       version: packageJson.version,
     },
   },
@@ -19,11 +19,11 @@ const options = {
 const specs = swaggerJsdoc(options);
 specs.servers = [
   {
-    url: 'https://api.boltz.exchange/v2',
+    url: 'https://swaps.zeuslsp.com/api/v2',
     description: 'Mainnet',
   },
   {
-    url: 'https://api.testnet.boltz.exchange/v2',
+    url: 'https://testnet-swaps.zeuslsp.com/api/v2',
     description: 'Testnet',
   },
   {
