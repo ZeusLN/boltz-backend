@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 const PREFERRED_WALLET_CORE: &str = "core";
+const PREFERRED_WALLET_LND: &str = "lnd";
 const NODE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
@@ -94,11 +95,13 @@ pub async fn connect_nodes<K: KeysHelper>(
 
                 if let Some(preferred_wallet) = preferred_wallet
                     && preferred_wallet != PREFERRED_WALLET_CORE
+                    && preferred_wallet != PREFERRED_WALLET_LND
                 {
                     return Err(anyhow!(
-                        "preferred wallet not supported: {} (supported: {})",
+                        "preferred wallet not supported: {} (supported: {}, {})",
                         preferred_wallet,
-                        PREFERRED_WALLET_CORE
+                        PREFERRED_WALLET_CORE,
+                        PREFERRED_WALLET_LND
                     ));
                 }
 
