@@ -297,6 +297,44 @@ class Boltz {
       await this.db.init();
       await this.redis?.connect();
 
+      // Create and connect LND clients in parallel; before the wallet manager
+      // is initialized, so an LND node can back the onchain wallet
+      const configuredLnds = this.config.currencies.flatMap(
+        (currencyConfig) => {
+          const currency = this.currencies.get(currencyConfig.symbol);
+          if (!currency) {
+            return [];
+          }
+
+          return (currencyConfig.lnds || []).map((lndConfig) => ({
+            currency,
+            symbol: currencyConfig.symbol,
+            client: new LndClient(
+              this.logger,
+              currencyConfig.symbol,
+              lndConfig,
+              this.sidecar,
+              this.routingFee,
+            ),
+          }));
+        },
+      );
+
+      await Promise.all(
+        configuredLnds.map(({ client }) => this.connectLightningClient(client)),
+      );
+
+      // Register in config order so "primary LND" selection stays deterministic.
+      for (const { currency, symbol, client } of configuredLnds) {
+        if (!client.isConnected()) {
+          this.logger.warn(`Skipping LND for ${symbol} - connection failed`);
+          client.disconnect();
+          continue;
+        }
+
+        currency.lndClients.set(client.id, client);
+      }
+
       // To initialize the key provider before starting the sidecar
       await this.walletManager.init(this.config.currencies);
 
@@ -338,43 +376,6 @@ class Boltz {
           return prms;
         }),
       );
-
-      // Create and connect LND clients in parallel
-      const configuredLnds = this.config.currencies.flatMap(
-        (currencyConfig) => {
-          const currency = this.currencies.get(currencyConfig.symbol);
-          if (!currency) {
-            return [];
-          }
-
-          return (currencyConfig.lnds || []).map((lndConfig) => ({
-            currency,
-            symbol: currencyConfig.symbol,
-            client: new LndClient(
-              this.logger,
-              currencyConfig.symbol,
-              lndConfig,
-              this.sidecar,
-              this.routingFee,
-            ),
-          }));
-        },
-      );
-
-      await Promise.all(
-        configuredLnds.map(({ client }) => this.connectLightningClient(client)),
-      );
-
-      // Register in config order so "primary LND" selection stays deterministic.
-      for (const { currency, symbol, client } of configuredLnds) {
-        if (!client.isConnected()) {
-          this.logger.warn(`Skipping LND for ${symbol} - connection failed`);
-          client.disconnect();
-          continue;
-        }
-
-        currency.lndClients.set(client.id, client);
-      }
 
       await this.db.backFillMigrations(this.currencies, this.walletManager);
 

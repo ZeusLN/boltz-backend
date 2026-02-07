@@ -14,7 +14,7 @@ import KeyRepository from '../../../lib/db/repositories/KeyRepository';
 import { slip77FromSeed } from '../../../lib/wallet/Slip77';
 import Wallet from '../../../lib/wallet/Wallet';
 import WalletLiquid from '../../../lib/wallet/WalletLiquid';
-import CoreWalletProvider from '../../../lib/wallet/providers/CoreWalletProvider';
+import LndWalletProvider from '../../../lib/wallet/providers/LndWalletProvider';
 import type {
   SentTransaction,
   WalletBalance,
@@ -45,7 +45,7 @@ const sentTransaction: SentTransaction = {
 const mockSendToAddress = jest.fn().mockResolvedValue(sentTransaction);
 const mockSweepWallet = jest.fn().mockResolvedValue(sentTransaction);
 
-jest.mock('../../../lib/wallet/providers/CoreWalletProvider', () => {
+jest.mock('../../../lib/wallet/providers/LndWalletProvider', () => {
   return jest.fn().mockImplementation(() => {
     return {
       symbol,
@@ -59,9 +59,7 @@ jest.mock('../../../lib/wallet/providers/CoreWalletProvider', () => {
   });
 });
 
-const mockedCoreWalletProvider = <jest.Mock<CoreWalletProvider>>(
-  CoreWalletProvider
-);
+const mockedLndWalletProvider = <jest.Mock<LndWalletProvider>>LndWalletProvider;
 
 describe('Wallet', () => {
   const encodeOutput = getHexBuffer(
@@ -80,7 +78,7 @@ describe('Wallet', () => {
 
   const network = bitcoinRegtest;
 
-  const walletProvider = new mockedCoreWalletProvider();
+  const walletProvider = new mockedLndWalletProvider();
 
   const wallet = new Wallet(
     Logger.disabledLogger,

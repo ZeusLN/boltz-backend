@@ -30,6 +30,7 @@ import type InjectedProvider from './ethereum/InjectedProvider';
 import ArkWallet from './providers/ArkWallet';
 import CoreWalletProvider from './providers/CoreWalletProvider';
 import ElementsWalletProvider from './providers/ElementsWalletProvider';
+import LndWalletProvider from './providers/LndWalletProvider';
 import type WalletProviderInterface from './providers/WalletProviderInterface';
 
 type CurrencyLimits = {
@@ -139,38 +140,53 @@ class WalletManager {
 
       let walletProvider: WalletProviderInterface | undefined = undefined;
 
-      if (
+      // The LND client is also used as onchain wallet for UTXO based chains if available
+      const lndWalletClient =
         configCurrencies.find((config) => config.symbol === currency.symbol)
-          ?.preferredWallet === 'lnd'
-      ) {
-        throw new Error('LND wallet support was removed');
-      }
+          ?.preferredWallet !== 'core'
+          ? WalletManager.getWalletLndClient(currency)
+          : undefined;
 
-      if (currency.type === CurrencyType.BitcoinLike) {
-        walletProvider = new CoreWalletProvider(
+      if (lndWalletClient !== undefined) {
+        if (currency.lndClients.size > 1) {
+          this.logger.warn(
+            `Multiple ${currency.symbol} LND nodes configured; using ${lndWalletClient.id} for the onchain wallet`,
+          );
+        }
+
+        walletProvider = new LndWalletProvider(
           this.logger,
+          lndWalletClient,
           currency.chainClient!,
-          currency.network!,
-          this.notificationClient,
         );
       } else {
-        walletProvider = new ElementsWalletProvider(
-          this.logger,
-          currency.chainClient! as IElementsClient,
-          currency.network! as LiquidNetwork,
-          this.notificationClient,
-        );
-      }
-
-      // Sanity check that wallet support is compiled in
-      try {
-        await walletProvider.getBalance();
-      } catch (error) {
-        // No wallet support is compiled in
-        if ((error as any).message === 'Method not found') {
-          throw Errors.NO_WALLET_SUPPORT(currency.symbol);
+        // Else the Bitcoin Core wallet is used
+        if (currency.type === CurrencyType.BitcoinLike) {
+          walletProvider = new CoreWalletProvider(
+            this.logger,
+            currency.chainClient!,
+            currency.network!,
+            this.notificationClient,
+          );
         } else {
-          throw error;
+          walletProvider = new ElementsWalletProvider(
+            this.logger,
+            currency.chainClient! as IElementsClient,
+            currency.network! as LiquidNetwork,
+            this.notificationClient,
+          );
+        }
+
+        // Sanity check that wallet support is compiled in
+        try {
+          await walletProvider.getBalance();
+        } catch (error) {
+          // No wallet support is compiled in
+          if ((error as any).message === 'Method not found') {
+            throw Errors.NO_WALLET_SUPPORT(currency.symbol);
+          } else {
+            throw error;
+          }
         }
       }
 
@@ -235,6 +251,14 @@ class WalletManager {
         );
       }
     }
+  };
+
+  // Lowest node id, to match the selection of the Rust sidecar's LND wallet
+  private static getWalletLndClient = (
+    currency: Currency,
+  ): LndClient | undefined => {
+    const nodeIds = Array.from(currency.lndClients.keys()).sort();
+    return nodeIds.length > 0 ? currency.lndClients.get(nodeIds[0]) : undefined;
   };
 
   private static deriveFromMnemonic = (mnemonic: string) => {
