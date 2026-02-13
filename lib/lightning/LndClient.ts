@@ -653,7 +653,9 @@ class LndClient extends BaseClient<EventTypes> implements LightningClient {
       addr: address,
       amount: toProtoInt(amount),
       label,
-      satPerByte: toOptionalProtoInt(satPerByte),
+      satPerVbyte: toOptionalProtoInt(
+        satPerByte !== undefined ? Math.round(satPerByte) : undefined,
+      ),
     });
 
     return this.unaryLightningCall<
@@ -678,7 +680,9 @@ class LndClient extends BaseClient<EventTypes> implements LightningClient {
       addr: address,
       sendAll: true,
       label,
-      satPerByte: toOptionalProtoInt(satPerByte),
+      satPerVbyte: toOptionalProtoInt(
+        satPerByte !== undefined ? Math.round(satPerByte) : undefined,
+      ),
     });
 
     return this.unaryLightningCall<
@@ -743,7 +747,7 @@ class LndClient extends BaseClient<EventTypes> implements LightningClient {
       private: privateChannel,
       nodePubkeyString: pubKey,
       localFundingAmount: toProtoInt(fundingAmount),
-      satPerByte: toProtoInt(satPerByte),
+      satPerVbyte: toProtoInt(Math.round(satPerByte)),
     };
 
     return this.unaryLightningCall<
