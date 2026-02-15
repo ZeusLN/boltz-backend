@@ -137,6 +137,18 @@ impl Lnd {
         &self.id
     }
 
+    pub async fn new_address(&mut self) -> anyhow::Result<String> {
+        let response = self
+            .lnd
+            .new_address(lnd_rpc::NewAddressRequest {
+                r#type: lnd_rpc::AddressType::TaprootPubkey as i32,
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+        Ok(response.address)
+    }
+
     pub async fn channel_backup(&mut self) -> anyhow::Result<Option<Vec<u8>>> {
         let res = self
             .lnd

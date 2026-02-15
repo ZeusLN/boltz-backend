@@ -93,7 +93,7 @@ pub async fn connect_nodes<K: KeysHelper>(
                     ..
                 } = currency;
 
-                if let Some(preferred_wallet) = preferred_wallet
+                if let Some(preferred_wallet) = preferred_wallet.as_deref()
                     && preferred_wallet != PREFERRED_WALLET_CORE
                     && preferred_wallet != PREFERRED_WALLET_LND
                 {
@@ -122,16 +122,37 @@ pub async fn connect_nodes<K: KeysHelper>(
                     None => None,
                 };
 
-                let wallet = match chain {
-                    Some(ref chain) => Some(wallet::Bitcoin::new(
+                let lnds = connect_lnds(cancellation_token.clone(), &symbol, lnd_configs).await;
+
+                let use_lnd_wallet =
+                    preferred_wallet.as_deref() != Some(PREFERRED_WALLET_CORE) && !lnds.is_empty();
+
+                let wallet: Option<Arc<dyn Wallet + Send + Sync>> = if use_lnd_wallet {
+                    let wallet_node_id = lnds.keys().min().cloned().unwrap();
+                    if lnds.len() > 1 {
+                        warn!(
+                            "Multiple {} LND nodes configured; using {} for the onchain wallet",
+                            symbol, wallet_node_id
+                        );
+                    }
+                    Some(Arc::new(wallet::BitcoinLnd::new(
                         network,
                         &seed,
-                        keys_info.derivationPath,
-                        chain.clone(),
-                    )?),
-                    None => None,
-                }
-                .map(|wallet| Arc::new(wallet) as Arc<dyn Wallet + Send + Sync>);
+                        keys_info.derivationPath.clone(),
+                        lnds[&wallet_node_id].clone(),
+                    )?))
+                } else {
+                    match chain {
+                        Some(ref chain) => Some(wallet::Bitcoin::new(
+                            network,
+                            &seed,
+                            keys_info.derivationPath,
+                            chain.clone(),
+                        )?),
+                        None => None,
+                    }
+                    .map(|wallet| Arc::new(wallet) as Arc<dyn Wallet + Send + Sync>)
+                };
 
                 if let Some(chain) = chain.as_ref()
                     && let Some(wallet) = wallet.as_ref()
@@ -169,7 +190,7 @@ pub async fn connect_nodes<K: KeysHelper>(
                             }
                             None => None,
                         },
-                        lnds: connect_lnds(cancellation_token.clone(), &symbol, lnd_configs).await,
+                        lnds,
                         evm_manager: None,
                     },
                 );

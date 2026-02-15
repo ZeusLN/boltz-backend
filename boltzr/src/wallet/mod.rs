@@ -5,11 +5,13 @@ pub use boltz_core::Network;
 
 mod ark;
 mod bitcoin;
+mod bitcoin_lnd;
 mod elements;
 mod keys;
 
 pub use ark::*;
 pub use bitcoin::*;
+pub use bitcoin_lnd::*;
 pub use elements::*;
 
 #[async_trait]
