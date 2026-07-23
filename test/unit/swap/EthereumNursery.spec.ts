@@ -14,6 +14,7 @@ import type {
   ERC20SwapValues,
   EtherSwapValues,
 } from '../../../lib/consts/Types';
+import { LockupWriteOutcome } from '../../../lib/db/LockupIdentity';
 import type Swap from '../../../lib/db/models/Swap';
 import ChainSwapRepository from '../../../lib/db/repositories/ChainSwapRepository';
 import ClaimTransactionRepository from '../../../lib/db/repositories/ClaimTransactionRepository';
@@ -41,10 +42,12 @@ type claimCallback = (args: {
 
 type ethLockupCallback = (args: {
   transaction: any;
+  logIndex: number;
   etherSwapValues: EtherSwapValues;
 }) => void;
 type erc20LockupCallback = (args: {
   transaction: any;
+  logIndex: number;
   erc20SwapValues: ERC20SwapValues;
 }) => void;
 
@@ -179,9 +182,12 @@ const mockSetLockupTransaction = jest
   .mockImplementation(
     async (swap: Swap, lockupTransactionId: string, onchainAmount: number) => {
       return {
-        ...swap,
-        onchainAmount,
-        lockupTransactionId,
+        outcome: LockupWriteOutcome.Acquired,
+        swap: {
+          ...swap,
+          onchainAmount,
+          lockupTransactionId,
+        },
       };
     },
   );
@@ -412,6 +418,115 @@ describe('EthereumNursery', () => {
     expect(scanSpy).toHaveBeenCalledTimes(2);
   });
 
+  test('should ignore a competing EtherSwap lockup once one is recorded', async () => {
+    const swap = {
+      pair: 'ETH/BTC',
+      type: SwapType.Submarine,
+      orderSide: OrderSide.SELL,
+      expectedAmount: 10,
+      timeoutBlockHeight: 11102219,
+      lockupTransactionId: 'already-recorded',
+      status: SwapUpdateEvent.TransactionConfirmed,
+    } as any;
+
+    const suppliedEtherSwapValues = {
+      claimAddress: mockAddress,
+      refundAddress: mockAddress,
+      amount: BigInt('100000000000'),
+      preimageHash: getHexString(examplePreimageHash),
+      timelock: swap.timeoutBlockHeight,
+    } as any;
+
+    const lockupListener = jest.fn();
+    const failedListener = jest.fn();
+    nursery.on('eth.lockup', lockupListener);
+    nursery.on('lockup.failed', failedListener);
+
+    await nursery.checkEtherSwapLockup(
+      swap,
+      exampleTransaction,
+      suppliedEtherSwapValues,
+      0,
+    );
+
+    expect(mockSetLockupTransaction).not.toHaveBeenCalled();
+    expect(lockupListener).not.toHaveBeenCalled();
+    expect(failedListener).not.toHaveBeenCalled();
+  });
+
+  test('should emit nothing when the EtherSwap lockup write is rejected', async () => {
+    const swap = {
+      pair: 'ETH/BTC',
+      type: SwapType.Submarine,
+      orderSide: OrderSide.SELL,
+      expectedAmount: 10,
+      timeoutBlockHeight: 11102219,
+    } as any;
+
+    mockSetLockupTransaction.mockResolvedValueOnce({
+      outcome: LockupWriteOutcome.Rejected,
+      swap: { ...swap, lockupTransactionId: 'other-owner' },
+    });
+
+    const emitSpy = jest.spyOn(nursery, 'emit');
+
+    await nursery.checkEtherSwapLockup(
+      swap,
+      exampleTransaction,
+      {
+        claimAddress: mockAddress,
+        refundAddress: mockAddress,
+        amount: BigInt('100000000000'),
+        preimageHash: getHexString(examplePreimageHash),
+        timelock: swap.timeoutBlockHeight,
+      } as any,
+      0,
+    );
+
+    expect(mockSetLockupTransaction).toHaveBeenCalledTimes(1);
+    expect(emitSpy).not.toHaveBeenCalled();
+
+    emitSpy.mockRestore();
+  });
+
+  test('should emit nothing when the ERC20Swap chain lockup write is rejected', async () => {
+    const chainSwap = {
+      id: 'chain-erc20-rejected',
+      type: SwapType.Chain,
+      receivingData: {
+        symbol: 'USDT',
+        expectedAmount: 10,
+        timeoutBlockHeight: 11102222,
+      },
+    };
+
+    const setUserLockupTransaction = jest.fn().mockResolvedValue({
+      outcome: LockupWriteOutcome.Rejected,
+      swap: chainSwap,
+    });
+    ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
+
+    const emitSpy = jest.spyOn(nursery, 'emit');
+
+    await nursery.checkErc20SwapLockup(
+      chainSwap as any,
+      exampleTransaction as any,
+      {
+        amount: BigInt('1000'),
+        claimAddress: mockAddress,
+        tokenAddress: mockTokenAddress,
+        timelock: chainSwap.receivingData.timeoutBlockHeight,
+        preimageHash: getHexString(examplePreimageHash),
+      } as any,
+      0,
+    );
+
+    expect(setUserLockupTransaction).toHaveBeenCalledTimes(1);
+    expect(emitSpy).not.toHaveBeenCalled();
+
+    emitSpy.mockRestore();
+  });
+
   test('should listen for EtherSwap lockup events', async () => {
     ChainSwapRepository.getChainSwap = jest.fn().mockResolvedValue(null);
 
@@ -443,6 +558,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: suppliedEtherSwapValues,
     });
 
@@ -459,7 +575,8 @@ describe('EthereumNursery', () => {
       mockGetSwapResult,
       exampleTransaction.hash,
       10,
-      true,
+      SwapUpdateEvent.TransactionConfirmed,
+      21,
     );
 
     expect(mockSetRefundAddress).toHaveBeenCalledTimes(1);
@@ -498,6 +615,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: suppliedEtherSwapValues,
     });
 
@@ -523,6 +641,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: suppliedEtherSwapValues,
     });
 
@@ -545,6 +664,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: suppliedEtherSwapValues,
     });
 
@@ -579,6 +699,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: suppliedEtherSwapValues,
     });
 
@@ -593,6 +714,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: suppliedEtherSwapValues,
     });
 
@@ -624,6 +746,7 @@ describe('EthereumNursery', () => {
 
     emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues: {
         claimAddress: mockAddress,
         refundAddress: mockAddress,
@@ -674,6 +797,7 @@ describe('EthereumNursery', () => {
 
     emitEthLockup({
       transaction: { ...exampleTransaction },
+      logIndex: 21,
       etherSwapValues: {
         amount: sentAmount,
         claimAddress: mockAddress,
@@ -713,6 +837,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues,
     });
 
@@ -728,6 +853,7 @@ describe('EthereumNursery', () => {
 
     await emitEthLockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       etherSwapValues,
     });
 
@@ -884,6 +1010,43 @@ describe('EthereumNursery', () => {
     });
   });
 
+  test('should ignore a competing ERC20Swap lockup once one is recorded', async () => {
+    const swap = {
+      pair: 'BTC/USDT',
+      type: SwapType.Submarine,
+      orderSide: OrderSide.BUY,
+      expectedAmount: 10,
+      timeoutBlockHeight: 11102222,
+      lockupTransactionId: 'already-recorded',
+      status: SwapUpdateEvent.TransactionConfirmed,
+    } as any;
+
+    const suppliedERC20SwapValues = {
+      amount: BigInt('1000'),
+      claimAddress: mockAddress,
+      refundAddress: mockAddress,
+      tokenAddress: mockTokenAddress,
+      timelock: swap.timeoutBlockHeight,
+      preimageHash: getHexString(examplePreimageHash),
+    } as any;
+
+    const lockupListener = jest.fn();
+    const failedListener = jest.fn();
+    nursery.on('erc20.lockup', lockupListener);
+    nursery.on('lockup.failed', failedListener);
+
+    await nursery.checkErc20SwapLockup(
+      swap,
+      exampleTransaction,
+      suppliedERC20SwapValues,
+      0,
+    );
+
+    expect(mockSetLockupTransaction).not.toHaveBeenCalled();
+    expect(lockupListener).not.toHaveBeenCalled();
+    expect(failedListener).not.toHaveBeenCalled();
+  });
+
   test('should listen for ERC20Swap lockup events', async () => {
     let lockupEmitted = false;
     let lockupFailed = 0;
@@ -914,6 +1077,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -935,7 +1099,8 @@ describe('EthereumNursery', () => {
       mockGetSwapResult,
       exampleTransaction.hash,
       10,
-      true,
+      SwapUpdateEvent.TransactionConfirmed,
+      21,
     );
 
     expect(mockSetRefundAddress).toHaveBeenCalledTimes(1);
@@ -979,6 +1144,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -1004,6 +1170,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -1029,6 +1196,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -1051,6 +1219,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -1087,6 +1256,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -1101,6 +1271,7 @@ describe('EthereumNursery', () => {
 
     await emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: suppliedERC20SwapValues,
     });
 
@@ -1132,6 +1303,7 @@ describe('EthereumNursery', () => {
 
     emitErc20Lockup({
       transaction: exampleTransaction,
+      logIndex: 21,
       erc20SwapValues: {
         claimAddress: mockAddress,
         refundAddress: mockAddress,
@@ -1183,6 +1355,7 @@ describe('EthereumNursery', () => {
 
     emitErc20Lockup({
       transaction: { ...exampleTransaction },
+      logIndex: 21,
       erc20SwapValues: {
         amount: sentAmount,
         claimAddress: mockAddress,
@@ -1208,8 +1381,11 @@ describe('EthereumNursery', () => {
     };
 
     const setUserLockupTransaction = jest.fn().mockResolvedValue({
-      ...chainSwap,
-      status: SwapUpdateEvent.TransactionLockupFailed,
+      outcome: LockupWriteOutcome.Acquired,
+      swap: {
+        ...chainSwap,
+        status: SwapUpdateEvent.TransactionLockupFailed,
+      },
     });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
@@ -1224,14 +1400,15 @@ describe('EthereumNursery', () => {
         preimageHash: getHexString(examplePreimageHash),
         timelock: chainSwap.receivingData.timeoutBlockHeight,
       } as any,
+      0,
     );
 
     expect(setUserLockupTransaction).toHaveBeenCalledWith(
       chainSwap,
       exampleTransaction.hash,
       10,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionConfirmed,
+      0,
       undefined,
     );
     expect(emitSpy).not.toHaveBeenCalledWith('eth.lockup', expect.anything());
@@ -1259,7 +1436,10 @@ describe('EthereumNursery', () => {
       status: SwapUpdateEvent.TransactionConfirmed,
     };
 
-    const setUserLockupTransaction = jest.fn().mockResolvedValue(updatedSwap);
+    const setUserLockupTransaction = jest.fn().mockResolvedValue({
+      outcome: LockupWriteOutcome.Acquired,
+      swap: updatedSwap,
+    });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
     const lockupPromise = new Promise<void>((resolve) => {
@@ -1279,6 +1459,7 @@ describe('EthereumNursery', () => {
         preimageHash: getHexString(examplePreimageHash),
         timelock: chainSwap.receivingData.timeoutBlockHeight,
       } as any,
+      0,
       { allowLockupFailedUpdate: true },
     );
 
@@ -1286,8 +1467,8 @@ describe('EthereumNursery', () => {
       chainSwap,
       exampleTransaction.hash,
       10,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionConfirmed,
+      0,
       { allowLockupFailedUpdate: true },
     );
     await lockupPromise;
@@ -1306,10 +1487,13 @@ describe('EthereumNursery', () => {
 
     const updatedSwap = {
       ...chainSwap,
-      status: SwapUpdateEvent.TransactionConfirmed,
+      status: SwapUpdateEvent.TransactionLockupFailed,
     };
 
-    const setUserLockupTransaction = jest.fn().mockResolvedValue(updatedSwap);
+    const setUserLockupTransaction = jest.fn().mockResolvedValue({
+      outcome: LockupWriteOutcome.Acquired,
+      swap: updatedSwap,
+    });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
     const emitSpy = jest.spyOn(nursery, 'emit');
@@ -1323,14 +1507,15 @@ describe('EthereumNursery', () => {
         preimageHash: getHexString(examplePreimageHash),
         timelock: chainSwap.receivingData.timeoutBlockHeight,
       } as any,
+      0,
     );
 
     expect(setUserLockupTransaction).toHaveBeenCalledWith(
       chainSwap,
       exampleTransaction.hash,
       9,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionLockupFailed,
+      0,
       undefined,
     );
     expect(emitSpy).toHaveBeenCalledWith('lockup.failed', {
@@ -1366,10 +1551,13 @@ describe('EthereumNursery', () => {
     };
     const updatedSwap = {
       ...chainSwap,
-      status: SwapUpdateEvent.TransactionConfirmed,
+      status: SwapUpdateEvent.TransactionLockupFailed,
     };
 
-    const setUserLockupTransaction = jest.fn().mockResolvedValue(updatedSwap);
+    const setUserLockupTransaction = jest.fn().mockResolvedValue({
+      outcome: LockupWriteOutcome.Acquired,
+      swap: updatedSwap,
+    });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
     const emitSpy = jest.spyOn(nursery, 'emit');
@@ -1379,8 +1567,8 @@ describe('EthereumNursery', () => {
       chainSwap,
       exampleTransaction.hash,
       10,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionLockupFailed,
+      0,
       undefined,
     );
     expect(emitSpy).toHaveBeenCalledWith('lockup.failed', {
@@ -1399,13 +1587,18 @@ describe('EthereumNursery', () => {
       lockupEvent: 'eth.lockup',
       timeoutBlockHeight: 11102219,
       checkLockup: (chainSwap) =>
-        nursery.checkEtherSwapLockup(chainSwap as any, exampleTransaction, {
-          claimAddress: mockAddress,
-          refundAddress: mockAddress,
-          amount: 10n * etherDecimals,
-          preimageHash: examplePreimageHash,
-          timelock: chainSwap.receivingData.timeoutBlockHeight,
-        }),
+        nursery.checkEtherSwapLockup(
+          chainSwap as any,
+          exampleTransaction,
+          {
+            claimAddress: mockAddress,
+            refundAddress: mockAddress,
+            amount: 10n * etherDecimals,
+            preimageHash: examplePreimageHash,
+            timelock: chainSwap.receivingData.timeoutBlockHeight,
+          },
+          0,
+        ),
     });
   });
 
@@ -1421,8 +1614,11 @@ describe('EthereumNursery', () => {
     };
 
     const setUserLockupTransaction = jest.fn().mockResolvedValue({
-      ...chainSwap,
-      status: SwapUpdateEvent.TransactionLockupFailed,
+      outcome: LockupWriteOutcome.Acquired,
+      swap: {
+        ...chainSwap,
+        status: SwapUpdateEvent.TransactionLockupFailed,
+      },
     });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
@@ -1438,14 +1634,15 @@ describe('EthereumNursery', () => {
         timelock: chainSwap.receivingData.timeoutBlockHeight,
         preimageHash: getHexString(examplePreimageHash),
       } as any,
+      0,
     );
 
     expect(setUserLockupTransaction).toHaveBeenCalledWith(
       chainSwap,
       exampleTransaction.hash,
       10,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionConfirmed,
+      0,
       undefined,
     );
     expect(emitSpy).not.toHaveBeenCalledWith('erc20.lockup', expect.anything());
@@ -1473,7 +1670,10 @@ describe('EthereumNursery', () => {
       status: SwapUpdateEvent.TransactionConfirmed,
     };
 
-    const setUserLockupTransaction = jest.fn().mockResolvedValue(updatedSwap);
+    const setUserLockupTransaction = jest.fn().mockResolvedValue({
+      outcome: LockupWriteOutcome.Acquired,
+      swap: updatedSwap,
+    });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
     const lockupPromise = new Promise<void>((resolve) => {
@@ -1494,6 +1694,7 @@ describe('EthereumNursery', () => {
         timelock: chainSwap.receivingData.timeoutBlockHeight,
         preimageHash: getHexString(examplePreimageHash),
       } as any,
+      0,
       { allowLockupFailedUpdate: true },
     );
 
@@ -1501,8 +1702,8 @@ describe('EthereumNursery', () => {
       chainSwap,
       exampleTransaction.hash,
       10,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionConfirmed,
+      0,
       { allowLockupFailedUpdate: true },
     );
     await lockupPromise;
@@ -1521,10 +1722,13 @@ describe('EthereumNursery', () => {
 
     const updatedSwap = {
       ...chainSwap,
-      status: SwapUpdateEvent.TransactionConfirmed,
+      status: SwapUpdateEvent.TransactionLockupFailed,
     };
 
-    const setUserLockupTransaction = jest.fn().mockResolvedValue(updatedSwap);
+    const setUserLockupTransaction = jest.fn().mockResolvedValue({
+      outcome: LockupWriteOutcome.Acquired,
+      swap: updatedSwap,
+    });
     ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
 
     const emitSpy = jest.spyOn(nursery, 'emit');
@@ -1539,14 +1743,15 @@ describe('EthereumNursery', () => {
         timelock: chainSwap.receivingData.timeoutBlockHeight,
         preimageHash: getHexString(examplePreimageHash),
       } as any,
+      0,
     );
 
     expect(setUserLockupTransaction).toHaveBeenCalledWith(
       chainSwap,
       exampleTransaction.hash,
       9,
-      true,
-      undefined,
+      SwapUpdateEvent.TransactionLockupFailed,
+      0,
       undefined,
     );
     expect(emitSpy).toHaveBeenCalledWith('lockup.failed', {
@@ -1565,14 +1770,19 @@ describe('EthereumNursery', () => {
       lockupEvent: 'erc20.lockup',
       timeoutBlockHeight: 11102222,
       checkLockup: (chainSwap) =>
-        nursery.checkErc20SwapLockup(chainSwap as any, exampleTransaction, {
-          amount: BigInt('1000'),
-          claimAddress: mockAddress,
-          refundAddress: mockAddress,
-          tokenAddress: mockTokenAddress,
-          timelock: chainSwap.receivingData.timeoutBlockHeight,
-          preimageHash: examplePreimageHash,
-        }),
+        nursery.checkErc20SwapLockup(
+          chainSwap as any,
+          exampleTransaction,
+          {
+            amount: BigInt('1000'),
+            claimAddress: mockAddress,
+            refundAddress: mockAddress,
+            tokenAddress: mockTokenAddress,
+            timelock: chainSwap.receivingData.timeoutBlockHeight,
+            preimageHash: examplePreimageHash,
+          },
+          0,
+        ),
     });
   });
 
