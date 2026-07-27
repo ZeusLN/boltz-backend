@@ -184,7 +184,8 @@ class EthereumNursery extends TypedEventEmitter<{
     swap: Swap | ChainSwapInfo,
     outcome: LockupWriteOutcome,
   ): boolean =>
-    outcome === LockupWriteOutcome.Acquired || swap.failureReason == null;
+    swap.status === SwapUpdateEvent.TransactionLockupFailed &&
+    (outcome === LockupWriteOutcome.Acquired || swap.failureReason == null);
 
   private validateEtherSwapLockup = async (
     swap: Swap | ChainSwapInfo,

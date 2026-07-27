@@ -182,11 +182,17 @@ const mockGetSwapsExpirable = jest.fn().mockImplementation(async () => {
 const mockSetLockupTransaction = jest
   .fn()
   .mockImplementation(
-    async (swap: Swap, lockupTransactionId: string, onchainAmount: number) => {
+    async (
+      swap: Swap,
+      lockupTransactionId: string,
+      onchainAmount: number,
+      status: SwapUpdateEvent,
+    ) => {
       return {
         outcome: LockupWriteOutcome.Acquired,
         swap: {
           ...swap,
+          status,
           onchainAmount,
           lockupTransactionId,
         },
@@ -529,6 +535,165 @@ describe('EthereumNursery', () => {
     emitSpy.mockRestore();
   });
 
+  describe('lockup failure emission', () => {
+    // Already has a refund address set to keep "setRefundAddress" out of the
+    // way of the emitted swap
+    const swap = {
+      id: 'lockupFailureEmission',
+      pair: 'ETH/BTC',
+      type: SwapType.Submarine,
+      orderSide: OrderSide.SELL,
+      expectedAmount: 10,
+      timeoutBlockHeight: 11102219,
+      refundAddress: mockRefundAddress,
+    } as any;
+
+    // Locks up 9 when 10 is expected, to always fail the validation
+    const etherSwapValues = {
+      claimAddress: mockAddress,
+      refundAddress: mockRefundAddress,
+      amount: BigInt('99999999999'),
+      preimageHash: getHexString(examplePreimageHash),
+      timelock: swap.timeoutBlockHeight,
+    } as any;
+
+    test.each`
+      status                                     | outcome                          | failureReason           | emits    | description
+      ${SwapUpdateEvent.TransactionConfirmed}    | ${LockupWriteOutcome.Idempotent} | ${undefined}            | ${false} | ${'not emit when the write to downgrade a confirmed lockup was refused'}
+      ${SwapUpdateEvent.InvoicePaid}             | ${LockupWriteOutcome.Idempotent} | ${undefined}            | ${false} | ${'not emit when the write was refused because the swap advanced already'}
+      ${SwapUpdateEvent.TransactionClaimed}      | ${LockupWriteOutcome.Idempotent} | ${undefined}            | ${false} | ${'not emit when the write was refused because the swap was claimed already'}
+      ${SwapUpdateEvent.TransactionLockupFailed} | ${LockupWriteOutcome.Idempotent} | ${undefined}            | ${true}  | ${'emit when the failure was written but no reason was recorded yet'}
+      ${SwapUpdateEvent.TransactionLockupFailed} | ${LockupWriteOutcome.Idempotent} | ${'recorded already'}   | ${false} | ${'not emit again when the reason was recorded already'}
+      ${SwapUpdateEvent.TransactionLockupFailed} | ${LockupWriteOutcome.Acquired}   | ${'of the prior owner'} | ${true}  | ${'emit when a new lockup acquired the swap'}
+      ${SwapUpdateEvent.TransactionLockupFailed} | ${LockupWriteOutcome.Acquired}   | ${undefined}            | ${true}  | ${'emit when the first lockup of the swap failed'}
+    `(
+      'should $description',
+      async ({ status, outcome, failureReason, emits }) => {
+        const writtenSwap = { ...swap, status, failureReason };
+        mockSetLockupTransaction.mockResolvedValueOnce({
+          outcome,
+          swap: writtenSwap,
+        });
+
+        const failedListener = jest.fn();
+        const lockupListener = jest.fn();
+        nursery.on('lockup.failed', failedListener);
+        nursery.on('eth.lockup', lockupListener);
+
+        await nursery.checkEtherSwapLockup(
+          swap,
+          exampleTransaction,
+          etherSwapValues,
+          0,
+        );
+
+        // The write is always attempted; only announcing it is guarded
+        expect(mockSetLockupTransaction).toHaveBeenCalledTimes(1);
+        expect(mockSetLockupTransaction).toHaveBeenCalledWith(
+          swap,
+          exampleTransaction.hash,
+          9,
+          SwapUpdateEvent.TransactionLockupFailed,
+          0,
+        );
+        expect(mockSetRefundAddress).not.toHaveBeenCalled();
+        expect(lockupListener).not.toHaveBeenCalled();
+
+        if (emits) {
+          expect(failedListener).toHaveBeenCalledTimes(1);
+          expect(failedListener).toHaveBeenCalledWith({
+            swap: writtenSwap,
+            reason: Errors.INSUFFICIENT_AMOUNT(9, 10).message,
+          });
+        } else {
+          expect(failedListener).not.toHaveBeenCalled();
+        }
+      },
+    );
+
+    test('should not emit a refused ERC20Swap lockup failure either', async () => {
+      const erc20Swap = {
+        id: 'lockupFailureEmissionErc20',
+        pair: 'BTC/USDT',
+        type: SwapType.Submarine,
+        orderSide: OrderSide.BUY,
+        expectedAmount: 10,
+        timeoutBlockHeight: 11102222,
+        refundAddress: mockRefundAddress,
+      } as any;
+
+      mockSetLockupTransaction.mockResolvedValueOnce({
+        outcome: LockupWriteOutcome.Idempotent,
+        swap: { ...erc20Swap, status: SwapUpdateEvent.TransactionConfirmed },
+      });
+
+      const emitSpy = jest.spyOn(nursery, 'emit');
+
+      await nursery.checkErc20SwapLockup(
+        erc20Swap,
+        exampleTransaction as any,
+        {
+          amount: BigInt('900'),
+          claimAddress: mockAddress,
+          refundAddress: mockRefundAddress,
+          tokenAddress: mockTokenAddress,
+          timelock: erc20Swap.timeoutBlockHeight,
+          preimageHash: getHexString(examplePreimageHash),
+        } as any,
+        0,
+      );
+
+      expect(mockSetLockupTransaction).toHaveBeenCalledWith(
+        erc20Swap,
+        exampleTransaction.hash,
+        9,
+        SwapUpdateEvent.TransactionLockupFailed,
+        0,
+      );
+      expect(emitSpy).not.toHaveBeenCalled();
+
+      emitSpy.mockRestore();
+    });
+
+    test('should not emit a refused chain swap lockup failure either', async () => {
+      const chainSwap = {
+        id: 'lockupFailureEmissionChain',
+        type: SwapType.Chain,
+        receivingData: {
+          symbol: 'ETH',
+          expectedAmount: 10,
+          timeoutBlockHeight: 11102219,
+        },
+      };
+
+      const setUserLockupTransaction = jest.fn().mockResolvedValue({
+        outcome: LockupWriteOutcome.Idempotent,
+        swap: { ...chainSwap, status: SwapUpdateEvent.TransactionConfirmed },
+      });
+      ChainSwapRepository.setUserLockupTransaction = setUserLockupTransaction;
+
+      const emitSpy = jest.spyOn(nursery, 'emit');
+
+      await nursery.checkEtherSwapLockup(
+        chainSwap as any,
+        exampleTransaction as any,
+        {
+          claimAddress: mockAddress,
+          refundAddress: mockRefundAddress,
+          amount: BigInt('99999999999'),
+          preimageHash: getHexString(examplePreimageHash),
+          timelock: chainSwap.receivingData.timeoutBlockHeight,
+        } as any,
+        0,
+      );
+
+      expect(setUserLockupTransaction).toHaveBeenCalledTimes(1);
+      expect(emitSpy).not.toHaveBeenCalled();
+
+      emitSpy.mockRestore();
+    });
+  });
+
   test('should listen for EtherSwap lockup events', async () => {
     ChainSwapRepository.getChainSwap = jest.fn().mockResolvedValue(null);
 
@@ -585,6 +750,7 @@ describe('EthereumNursery', () => {
     expect(mockSetRefundAddress).toHaveBeenCalledWith(
       {
         ...mockGetSwapResult,
+        status: SwapUpdateEvent.TransactionConfirmed,
         onchainAmount: 10,
         lockupTransactionId: exampleTransaction.hash,
       },
@@ -864,6 +1030,7 @@ describe('EthereumNursery', () => {
     expect(mockSetRefundAddress).toHaveBeenCalledWith(
       {
         ...mockGetSwapResult,
+        status: SwapUpdateEvent.TransactionConfirmed,
         onchainAmount: 10,
         lockupTransactionId: exampleTransaction.hash,
       },
@@ -1103,6 +1270,7 @@ describe('EthereumNursery', () => {
     expect(mockSetRefundAddress).toHaveBeenCalledWith(
       {
         ...mockGetSwapResult,
+        status: SwapUpdateEvent.TransactionConfirmed,
         onchainAmount: 10,
         lockupTransactionId: exampleTransaction.hash,
       },
@@ -1170,6 +1338,7 @@ describe('EthereumNursery', () => {
     expect(mockSetRefundAddress).toHaveBeenCalledWith(
       {
         ...mockGetSwapResult,
+        status: SwapUpdateEvent.TransactionConfirmed,
         onchainAmount: 10,
         lockupTransactionId: exampleTransaction.hash,
       },
