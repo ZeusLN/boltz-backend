@@ -13,6 +13,7 @@ import Pair from '../../../lib/db/models/Pair';
 import Swap from '../../../lib/db/models/Swap';
 import ChainSwapRepository from '../../../lib/db/repositories/ChainSwapRepository';
 import SwapRepository from '../../../lib/db/repositories/SwapRepository';
+import WrappedSwapRepository from '../../../lib/db/repositories/WrappedSwapRepository';
 import Errors from '../../../lib/swap/Errors';
 import EthereumNursery from '../../../lib/swap/EthereumNursery';
 import OverpaymentProtector from '../../../lib/swap/OverpaymentProtector';
@@ -214,13 +215,93 @@ describe('EthereumNursery', () => {
     );
     expect(updated.receivingData.transactionVout).toEqual(5);
 
-    await nursery.checkEtherSwapLockup(
+    // What SwapNursery does when it handles the "lockup.failed" event
+    const withReason = await WrappedSwapRepository.setStatus(
       updated,
+      SwapUpdateEvent.TransactionLockupFailed,
+      Errors.INSUFFICIENT_AMOUNT(9, 10).message,
+    );
+
+    await nursery.checkEtherSwapLockup(
+      withReason,
       exampleTransaction,
       underpaidValues,
       5,
     );
     expect(failedEvents).toHaveBeenCalledTimes(1);
+  });
+
+  test('should emit lockup.failed again when a renegotiated lockup still fails', async () => {
+    const id = generateSwapId(SwapVersion.Taproot);
+    await ChainSwapRepository.addChainSwap({
+      chainSwap: {
+        id,
+        fee: 1,
+        pair: 'ETH/BTC',
+        acceptZeroConf: false,
+        orderSide: OrderSide.SELL,
+        status: SwapUpdateEvent.SwapCreated,
+        preimageHash: getHexString(randomBytes(32)),
+        createdRefundSignature: false,
+      },
+      sendingData: {
+        swapId: id,
+        symbol: 'BTC',
+        lockupAddress: 'bc1',
+        timeoutBlockHeight: 1,
+        expectedAmount: 9,
+      },
+      receivingData: {
+        swapId: id,
+        symbol: 'ETH',
+        lockupAddress: mockAddress,
+        timeoutBlockHeight: 1,
+        expectedAmount: 10,
+      },
+    });
+    const swap = (await ChainSwapRepository.getChainSwap({ id }))!;
+
+    const failedEvents = jest.fn();
+    nursery.on('lockup.failed', failedEvents);
+
+    const underpaidValues = validEtherSwapValues(
+      swap.receivingData.timeoutBlockHeight,
+    );
+    underpaidValues.amount = BigInt('90000000000');
+
+    releaseHook();
+    await nursery.checkEtherSwapLockup(
+      swap,
+      exampleTransaction,
+      underpaidValues,
+      5,
+    );
+    expect(failedEvents).toHaveBeenCalledTimes(1);
+
+    const failed = await WrappedSwapRepository.setStatus(
+      (await ChainSwapRepository.getChainSwap({ id }))!,
+      SwapUpdateEvent.TransactionLockupFailed,
+      Errors.INSUFFICIENT_AMOUNT(9, 10).message,
+    );
+
+    // Renegotiating clears the failure reason, but the amount is still too low
+    const renegotiated = await ChainSwapRepository.setExpectedAmounts(
+      failed,
+      1,
+      10,
+      9,
+      false,
+    );
+    expect(renegotiated.failureReason).toBeNull();
+
+    await nursery.checkEtherSwapLockup(
+      renegotiated,
+      exampleTransaction,
+      underpaidValues,
+      5,
+      { allowLockupFailedUpdate: true },
+    );
+    expect(failedEvents).toHaveBeenCalledTimes(2);
   });
 
   test('should emit only its own identity when a valid submarine lockup takes over from a failed one', async () => {

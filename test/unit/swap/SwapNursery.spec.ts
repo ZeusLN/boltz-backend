@@ -1518,6 +1518,7 @@ describe('SwapNursery', () => {
         },
         receivingData: {
           transactionId: 'chain-lockup-transaction',
+          transactionVout: 0,
         },
       } as unknown as ChainSwapInfo;
 
@@ -1552,6 +1553,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
 
@@ -1584,6 +1586,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
       await eventPromise;
@@ -1602,6 +1605,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
 
@@ -1626,6 +1630,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
 
@@ -1658,6 +1663,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
 
@@ -1684,19 +1690,52 @@ describe('SwapNursery', () => {
         ...baseMockChainSwap,
         receivingData: {
           transactionId: 'other-lockup-transaction',
+          transactionVout: 0,
         },
       };
 
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
 
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('because other-lockup-transaction owns it'),
+        expect.stringContaining('because other-lockup-transaction:'),
+      );
+      expect(mockHandleChainSwapLockup).not.toHaveBeenCalled();
+      expect(swapNursery.emit).not.toHaveBeenCalledWith(
+        'transaction',
+        expect.anything(),
+      );
+      expect(SendApprovalHoldRepository.remove).toHaveBeenCalledWith(
+        baseMockChainSwap.id,
+      );
+    });
+
+    test('should not lock up when another output of the event transaction owns the swap', async () => {
+      mockGetChainSwapResult = {
+        ...baseMockChainSwap,
+        receivingData: {
+          transactionId: 'chain-lockup-transaction',
+          transactionVout: 1,
+        },
+      };
+
+      (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
+        swap: baseMockChainSwap,
+        transaction: mockTransaction,
+        lockupTransactionVout: 0,
+        confirmed: true,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('because chain-lockup-transaction:1 owns it'),
       );
       expect(mockHandleChainSwapLockup).not.toHaveBeenCalled();
       expect(swapNursery.emit).not.toHaveBeenCalledWith(
@@ -1722,6 +1761,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
       await new Promise((resolve) => setImmediate(resolve));
@@ -1763,6 +1803,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('chainSwap.lockup', {
         swap: baseMockChainSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockChainSwap.receivingData.transactionVout!,
         confirmed: true,
       });
       await new Promise((resolve) => setImmediate(resolve));
@@ -1881,10 +1922,11 @@ describe('SwapNursery', () => {
       await listeners['eth.lockup']({
         swap: chainSwap,
         transactionHash: '0xevent',
+        logIndex: 3,
       });
 
       expect(mockLogger.warn).toHaveBeenCalledWith(
-        expect.stringContaining('because 0xother-owner owns it'),
+        expect.stringContaining('because 0xother-owner:'),
       );
       expect(mockHandleChainSwapLockup).not.toHaveBeenCalled();
       expect(swapNursery.emit).not.toHaveBeenCalledWith(
@@ -2010,6 +2052,7 @@ describe('SwapNursery', () => {
         invoice: 'lnbcrt1',
         createdRefundSignature: false,
         lockupTransactionId: '0xsubmarine',
+        lockupTransactionVout: 2,
       } as unknown as Swap;
       mockGetSwapResult = submarineSwap;
       (swapNursery as any).sendApprovalHook = { hook: jest.fn() };
@@ -2021,6 +2064,7 @@ describe('SwapNursery', () => {
       await listeners['eth.lockup']({
         swap: submarineSwap,
         transactionHash: '0xsubmarine',
+        logIndex: 2,
       });
 
       expect(ChainSwapRepository.getChainSwap).not.toHaveBeenCalled();
@@ -2050,6 +2094,7 @@ describe('SwapNursery', () => {
         invoice: 'lnbcrt1',
         createdRefundSignature: false,
         lockupTransactionId: '0xother-owner',
+        lockupTransactionVout: 2,
       } as unknown as Swap;
       mockGetSwapResult = submarineSwap;
       const attemptSettleSwapSpy = jest
@@ -2061,8 +2106,58 @@ describe('SwapNursery', () => {
       await listeners['eth.lockup']({
         swap: submarineSwap,
         transactionHash: '0xsubmarine',
+        logIndex: 2,
       });
 
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('because 0xother-owner:2 owns it'),
+      );
+      expect(attemptSettleSwapSpy).not.toHaveBeenCalled();
+      expect(emitSpy).not.toHaveBeenCalledWith(
+        'transaction',
+        expect.anything(),
+      );
+
+      emitSpy.mockRestore();
+    });
+
+    test('should not pay when another log of the event transaction owns the swap', async () => {
+      const listeners: Record<string, (...args: any[]) => Promise<void>> = {};
+      const ethereumNursery = {
+        on: jest.fn(
+          (event: string, callback: (...args: any[]) => Promise<void>) => {
+            listeners[event] = callback;
+          },
+        ),
+        init: jest.fn().mockResolvedValue(undefined),
+      } as any;
+
+      const submarineSwap = {
+        id: 'submarine-swap-id',
+        pair: 'BTC/BTC',
+        type: SwapType.Submarine,
+        orderSide: OrderSide.BUY,
+        invoice: 'lnbcrt1',
+        createdRefundSignature: false,
+        lockupTransactionId: '0xsubmarine',
+        lockupTransactionVout: 3,
+      } as unknown as Swap;
+      mockGetSwapResult = submarineSwap;
+      const attemptSettleSwapSpy = jest
+        .spyOn(swapNursery, 'attemptSettleSwap')
+        .mockResolvedValue(undefined);
+      const emitSpy = jest.spyOn(swapNursery, 'emit');
+
+      await (swapNursery as any).listenEthereumNursery(ethereumNursery);
+      await listeners['eth.lockup']({
+        swap: submarineSwap,
+        transactionHash: '0xsubmarine',
+        logIndex: 1,
+      });
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('because 0xsubmarine:3 owns it'),
+      );
       expect(attemptSettleSwapSpy).not.toHaveBeenCalled();
       expect(emitSpy).not.toHaveBeenCalledWith(
         'transaction',
@@ -2131,6 +2226,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
         confirmed: true,
       });
 
@@ -2170,6 +2266,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: swapWithoutInvoice,
         transaction: mockTransaction,
+        lockupTransactionVout: swapWithoutInvoice.lockupTransactionVout,
         confirmed: true,
       });
 
@@ -2190,6 +2287,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
         confirmed: true,
       });
 
@@ -2217,6 +2315,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
         confirmed: false,
       });
 
@@ -2243,6 +2342,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
         confirmed: true,
       });
 
@@ -2270,6 +2370,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
         confirmed: true,
       });
 
@@ -2304,6 +2405,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).utxoNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         transaction: mockTransaction,
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
         confirmed: true,
       });
 
@@ -2429,6 +2531,8 @@ describe('SwapNursery', () => {
         createdRefundSignature: false,
         invoice: 'lnbc123...',
         status: SwapUpdateEvent.TransactionConfirmed,
+        lockupTransactionId: 'ark-lockup-id',
+        lockupTransactionVout: 1,
       };
 
       mockPayInvoice = jest
@@ -2469,6 +2573,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).arkNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         lockupTransactionId: 'ark-lockup-id',
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
       });
 
       await eventPromise;
@@ -2495,6 +2600,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).arkNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         lockupTransactionId: 'ark-lockup-id',
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
       });
 
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -2523,6 +2629,7 @@ describe('SwapNursery', () => {
       (swapNursery as any).arkNursery.emit('swap.lockup', {
         swap: baseMockSwap,
         lockupTransactionId: 'ark-lockup-id',
+        lockupTransactionVout: baseMockSwap.lockupTransactionVout,
       });
 
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -2541,6 +2648,39 @@ describe('SwapNursery', () => {
         expect.anything(),
       );
     });
+
+    test.each`
+      name                | fetched
+      ${'transaction id'} | ${{ lockupTransactionId: 'other-lockup-id' }}
+      ${'vout'}           | ${{ lockupTransactionVout: 2 }}
+    `(
+      'should not act when the recorded $name no longer matches the event',
+      async ({ fetched }) => {
+        mockGetSwapResult = {
+          ...baseMockSwap,
+          ...fetched,
+        };
+
+        (swapNursery as any).arkNursery.emit('swap.lockup', {
+          swap: baseMockSwap,
+          lockupTransactionId: 'ark-lockup-id',
+          lockupTransactionVout: baseMockSwap.lockupTransactionVout,
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.stringContaining('owns it'),
+        );
+        expect(mockPayInvoice).not.toHaveBeenCalled();
+        expect(mockClaimVtxo).not.toHaveBeenCalled();
+        expect(mockSetSwapRate).not.toHaveBeenCalled();
+        expect(swapNursery.emit).not.toHaveBeenCalledWith(
+          'transaction',
+          expect.anything(),
+        );
+      },
+    );
   });
 
   describe('server.lockup.confirmed', () => {

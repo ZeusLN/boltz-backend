@@ -465,6 +465,25 @@ describe('ChainSwapRepository', () => {
     },
   );
 
+  test('should reject when the receiving data cannot be found', async () => {
+    const swap = await createChainSwap();
+
+    const result = await ChainSwapRepository.setUserLockupTransaction(
+      {
+        id: swap.chainSwap.id,
+        receivingData: { symbol: 'NOT-A-SYMBOL' },
+      } as ChainSwapInfo,
+      'lockup-a',
+      1_000,
+      SwapUpdateEvent.TransactionConfirmed,
+      0,
+    );
+
+    expect(result.outcome).toEqual(LockupWriteOutcome.Rejected);
+    expect(result.swap.status).toEqual(SwapUpdateEvent.SwapCreated);
+    expect(result.swap.receivingData.transactionId).toBeNull();
+  });
+
   test('should not let a different transaction replace a confirmed user lockup', async () => {
     const swap = await createChainSwap();
     const amount = swap.receivingData.expectedAmount! + 1;

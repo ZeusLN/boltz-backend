@@ -360,6 +360,7 @@ class ChainSwapRepository {
         });
         const currentData = await ChainSwapData.findOne({
           transaction,
+          lock: transaction.LOCK.UPDATE,
           where: { swapId: swap.id, symbol: swap.receivingData.symbol },
         });
         if (current === null || currentData === null) {
@@ -422,6 +423,7 @@ class ChainSwapRepository {
       });
       const currentData = await ChainSwapData.findOne({
         transaction,
+        lock: transaction.LOCK.UPDATE,
         where: { swapId: swap.id, symbol: swap.receivingData.symbol },
       });
       if (

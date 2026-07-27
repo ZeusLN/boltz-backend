@@ -180,6 +180,12 @@ class EthereumNursery extends TypedEventEmitter<{
       recordedStatus: swap.status as SwapUpdateEvent,
     });
 
+  private static shouldEmitLockupFailed = (
+    swap: Swap | ChainSwapInfo,
+    outcome: LockupWriteOutcome,
+  ): boolean =>
+    outcome === LockupWriteOutcome.Acquired || swap.failureReason == null;
+
   private validateEtherSwapLockup = async (
     swap: Swap | ChainSwapInfo,
     transaction: Transaction | TransactionResponse,
@@ -243,26 +249,33 @@ class EthereumNursery extends TypedEventEmitter<{
     return undefined;
   };
 
-  public checkEtherSwapLockup = async (
-    swap: Swap | ChainSwapInfo,
-    transaction: Transaction | TransactionResponse,
-    etherSwapValues: EtherSwapValues,
-    logIndex: number,
-    options?: UserLockupTransactionOptions,
-  ) => {
-    if (
-      this.getSwapReceivingCurrency(swap) !==
-      this.ethereumManager.networkDetails.symbol
-    ) {
-      return;
-    }
-
-    await this.lock.acquire(swap.id, 'checkEtherSwapLockup', async () => {
+  private processLockup = async ({
+    swap,
+    transaction,
+    logIndex,
+    lockReason,
+    contractName,
+    lockupAmount,
+    refundAddress,
+    validate,
+    emitLockup,
+    options,
+  }: {
+    swap: Swap | ChainSwapInfo;
+    transaction: Transaction | TransactionResponse;
+    logIndex: number;
+    lockReason: string;
+    contractName: string;
+    lockupAmount: number;
+    refundAddress: string;
+    validate: () => Promise<string | undefined>;
+    emitLockup: (swap: Swap | ChainSwapInfo) => void;
+    options?: UserLockupTransactionOptions;
+  }) =>
+    this.lock.acquire(swap.id, lockReason, async () => {
       this.logger.debug(
-        `Found lockup in ${this.ethereumManager.networkDetails.name} EtherSwap contract for ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}: ${transaction.hash}`,
+        `Found lockup in ${this.ethereumManager.networkDetails.name} ${contractName} contract for ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}: ${transaction.hash}`,
       );
-
-      const lockupAmount = Number(etherSwapValues.amount / etherDecimals);
 
       if (this.isCompetingLockup(swap, transaction.hash!, logIndex)) {
         this.logger.debug(
@@ -271,11 +284,7 @@ class EthereumNursery extends TypedEventEmitter<{
         return;
       }
 
-      const reason = await this.validateEtherSwapLockup(
-        swap,
-        transaction,
-        etherSwapValues,
-      );
+      const reason = await validate();
       const status =
         reason === undefined
           ? SwapUpdateEvent.TransactionConfirmed
@@ -306,51 +315,84 @@ class EthereumNursery extends TypedEventEmitter<{
         return;
       }
 
-      swap = result.swap;
+      let updated = result.swap;
 
       if (
-        swap.type === SwapType.Submarine &&
-        (swap as Swap).refundAddress == null
+        updated.type === SwapType.Submarine &&
+        (updated as Swap).refundAddress == null
       ) {
-        swap = await SwapRepository.setRefundAddress(
-          swap as Swap,
-          etherSwapValues.refundAddress,
+        updated = await SwapRepository.setRefundAddress(
+          updated as Swap,
+          refundAddress,
         );
       }
 
       if (reason !== undefined) {
-        if (result.outcome === LockupWriteOutcome.Acquired) {
-          this.emit('lockup.failed', { swap, reason });
+        if (EthereumNursery.shouldEmitLockupFailed(updated, result.outcome)) {
+          this.emit('lockup.failed', { swap: updated, reason });
         }
         return;
       }
 
       if (
-        swap.type === SwapType.Chain &&
-        !ChainSwapRepository.canActOnUserLockup(swap as ChainSwapInfo, options)
+        updated.type === SwapType.Chain &&
+        !ChainSwapRepository.canActOnUserLockup(
+          updated as ChainSwapInfo,
+          options,
+        )
       ) {
         this.logger.debug(
-          `Not acting on lockup transaction of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id} because lockup failed already`,
+          `Not acting on lockup transaction of ${swapTypeToPrettyString(updated.type)} Swap ${updated.id} because lockup failed already`,
         );
         return;
       }
 
       if (
-        swap.type === SwapType.Submarine &&
-        (swap as Swap).refundAddress !== etherSwapValues.refundAddress
+        updated.type === SwapType.Submarine &&
+        (updated as Swap).refundAddress !== refundAddress
       ) {
-        swap = await SwapRepository.setRefundAddress(
-          swap as Swap,
-          etherSwapValues.refundAddress,
+        updated = await SwapRepository.setRefundAddress(
+          updated as Swap,
+          refundAddress,
         );
       }
 
-      this.emit('eth.lockup', {
-        swap,
-        etherSwapValues,
-        logIndex,
-        transactionHash: transaction.hash!,
-      });
+      emitLockup(updated);
+    });
+
+  public checkEtherSwapLockup = async (
+    swap: Swap | ChainSwapInfo,
+    transaction: Transaction | TransactionResponse,
+    etherSwapValues: EtherSwapValues,
+    logIndex: number,
+    options?: UserLockupTransactionOptions,
+  ) => {
+    if (
+      this.getSwapReceivingCurrency(swap) !==
+      this.ethereumManager.networkDetails.symbol
+    ) {
+      return;
+    }
+
+    await this.processLockup({
+      swap,
+      transaction,
+      logIndex,
+      options,
+      lockReason: 'checkEtherSwapLockup',
+      contractName: 'EtherSwap',
+      lockupAmount: Number(etherSwapValues.amount / etherDecimals),
+      refundAddress: etherSwapValues.refundAddress,
+      validate: () =>
+        this.validateEtherSwapLockup(swap, transaction, etherSwapValues),
+      emitLockup: (updated) => {
+        this.emit('eth.lockup', {
+          swap: updated,
+          etherSwapValues,
+          logIndex,
+          transactionHash: transaction.hash!,
+        });
+      },
     });
   };
 
@@ -442,104 +484,31 @@ class EthereumNursery extends TypedEventEmitter<{
 
     const erc20Wallet = wallet.walletProvider as ERC20WalletProvider;
 
-    await this.lock.acquire(swap.id, 'checkErc20SwapLockup', async () => {
-      this.logger.debug(
-        `Found lockup in ${this.ethereumManager.networkDetails.name} ERC20Swap contract for ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}: ${transaction.hash}`,
-      );
-
-      const lockupAmount = erc20Wallet.normalizeTokenAmount(
-        erc20SwapValues.amount,
-      );
-
-      if (this.isCompetingLockup(swap, transaction.hash!, logIndex)) {
-        this.logger.debug(
-          `Ignoring competing lockup transaction ${transaction.hash} of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}`,
-        );
-        return;
-      }
-
-      const reason = await this.validateErc20SwapLockup(
-        swap,
-        transaction,
-        erc20SwapValues,
-        wallet.symbol,
-        erc20Wallet,
-      );
-      const status =
-        reason === undefined
-          ? SwapUpdateEvent.TransactionConfirmed
-          : SwapUpdateEvent.TransactionLockupFailed;
-
-      const result =
-        swap.type === SwapType.Submarine
-          ? await SwapRepository.setLockupTransaction(
-              swap as Swap,
-              transaction.hash!,
-              lockupAmount,
-              status,
-              logIndex,
-            )
-          : await ChainSwapRepository.setUserLockupTransaction(
-              swap as ChainSwapInfo,
-              transaction.hash!,
-              lockupAmount,
-              status,
-              logIndex,
-              options,
-            );
-
-      if (result.outcome === LockupWriteOutcome.Rejected) {
-        this.logger.warn(
-          `Ignoring lockup transaction ${transaction.hash}:${logIndex} of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id} because another lockup owns it`,
-        );
-        return;
-      }
-
-      swap = result.swap;
-
-      if (
-        swap.type === SwapType.Submarine &&
-        (swap as Swap).refundAddress == null
-      ) {
-        swap = await SwapRepository.setRefundAddress(
-          swap as Swap,
-          erc20SwapValues.refundAddress,
-        );
-      }
-
-      if (reason !== undefined) {
-        if (result.outcome === LockupWriteOutcome.Acquired) {
-          this.emit('lockup.failed', { swap, reason });
-        }
-        return;
-      }
-
-      if (
-        swap.type === SwapType.Chain &&
-        !ChainSwapRepository.canActOnUserLockup(swap as ChainSwapInfo, options)
-      ) {
-        this.logger.debug(
-          `Not acting on lockup transaction of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id} because lockup failed already`,
-        );
-        return;
-      }
-
-      if (
-        swap.type === SwapType.Submarine &&
-        (swap as Swap).refundAddress !== erc20SwapValues.refundAddress
-      ) {
-        swap = await SwapRepository.setRefundAddress(
-          swap as Swap,
-          erc20SwapValues.refundAddress,
-        );
-      }
-
-      this.emit('erc20.lockup', {
-        swap,
-        erc20SwapValues,
-        logIndex,
-        transactionHash: transaction.hash!,
-      });
+    await this.processLockup({
+      swap,
+      transaction,
+      logIndex,
+      options,
+      lockReason: 'checkErc20SwapLockup',
+      contractName: 'ERC20Swap',
+      lockupAmount: erc20Wallet.normalizeTokenAmount(erc20SwapValues.amount),
+      refundAddress: erc20SwapValues.refundAddress,
+      validate: () =>
+        this.validateErc20SwapLockup(
+          swap,
+          transaction,
+          erc20SwapValues,
+          wallet.symbol,
+          erc20Wallet,
+        ),
+      emitLockup: (updated) => {
+        this.emit('erc20.lockup', {
+          swap: updated,
+          erc20SwapValues,
+          logIndex,
+          transactionHash: transaction.hash!,
+        });
+      },
     });
   };
 

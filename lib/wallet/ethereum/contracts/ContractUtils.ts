@@ -1,4 +1,5 @@
 import type { Provider, Result } from 'ethers';
+import type Logger from '../../../Logger';
 import { getHexBuffer } from '../../../Utils';
 import type {
   AnySwap,
@@ -64,6 +65,7 @@ const querySwapValuesFromLock = async <T extends { preimageHash: Buffer }>(
   identifier: LockupIdentifier | undefined,
   formatValues: (args: Result) => T,
   logIndex?: number,
+  logger?: Logger,
 ): Promise<T> => {
   const lockTransactionReceipt =
     await provider.getTransactionReceipt(lockTransactionHash);
@@ -116,6 +118,9 @@ const querySwapValuesFromLock = async <T extends { preimageHash: Buffer }>(
       logIndex !== undefined &&
       identifier !== undefined
     ) {
+      logger?.warn(
+        `Recorded log index ${logIndex} of lockup transaction ${lockTransactionHash} did not resolve; falling back to searching the whole receipt`,
+      );
       lockupsFound = await findLockups(undefined);
     }
 
@@ -134,6 +139,7 @@ export const queryEtherSwapValuesFromLock = async (
   lockTransactionHash: string,
   lockedByUser: boolean,
   logIndex?: number,
+  logger?: Logger,
 ): Promise<EtherSwapValues> =>
   querySwapValuesFromLock(
     provider,
@@ -142,6 +148,7 @@ export const queryEtherSwapValuesFromLock = async (
     await getIdentifier(swap, lockedByUser),
     formatEtherSwapValues,
     logIndex,
+    logger,
   );
 
 export const queryERC20SwapValuesFromLock = async (
@@ -151,6 +158,7 @@ export const queryERC20SwapValuesFromLock = async (
   lockTransactionHash: string,
   lockedByUser: boolean,
   logIndex?: number,
+  logger?: Logger,
 ): Promise<ERC20SwapValues> =>
   querySwapValuesFromLock(
     provider,
@@ -159,6 +167,7 @@ export const queryERC20SwapValuesFromLock = async (
     await getIdentifier(swap, lockedByUser),
     formatERC20SwapValues,
     logIndex,
+    logger,
   );
 
 export const queryEtherSwapValuesFromTransaction = async (

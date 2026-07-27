@@ -38,6 +38,7 @@ class ArkNursery extends TypedEventEmitter<{
   'swap.lockup': {
     swap: Swap;
     lockupTransactionId: string;
+    lockupTransactionVout: number;
   };
   'swap.lockup.failed': {
     swap: Swap;
@@ -53,6 +54,7 @@ class ArkNursery extends TypedEventEmitter<{
   'chainSwap.lockup': {
     swap: ChainSwapInfo;
     lockupTransactionId: string;
+    lockupTransactionVout: number;
   };
   'chainSwap.lockup.failed': {
     swap: ChainSwapInfo;
@@ -250,6 +252,7 @@ class ArkNursery extends TypedEventEmitter<{
     this.emit('chainSwap.lockup', {
       swap,
       lockupTransactionId: vHtlc.txId,
+      lockupTransactionVout: vHtlc.vout,
     });
   };
 
@@ -362,6 +365,7 @@ class ArkNursery extends TypedEventEmitter<{
     this.emit('swap.lockup', {
       swap,
       lockupTransactionId: vHtlc.txId,
+      lockupTransactionVout: vHtlc.vout,
     });
   };
 

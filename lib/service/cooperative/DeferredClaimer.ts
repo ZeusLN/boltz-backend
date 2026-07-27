@@ -530,6 +530,7 @@ class DeferredClaimer extends CoopSignerBase<{
               transactionId,
               true,
               logIndex ?? undefined,
+              this.logger,
             );
           },
           RPC_LOOKUP_CONCURRENCY,
@@ -585,6 +586,7 @@ class DeferredClaimer extends CoopSignerBase<{
               transactionId,
               true,
               logIndex ?? undefined,
+              this.logger,
             );
           },
           RPC_LOOKUP_CONCURRENCY,

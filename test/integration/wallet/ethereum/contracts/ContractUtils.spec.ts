@@ -1,6 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { randomBytes } from 'crypto';
 import { MaxUint256 } from 'ethers';
+import type Logger from '../../../../../lib/Logger';
 import type {
   AnySwap,
   ERC20SwapValues,
@@ -269,6 +270,8 @@ describe('ContractUtils', () => {
     });
 
     test('should fall back to a unique match when the logIndex is stale', async () => {
+      const logger = { warn: jest.fn() } as unknown as Logger;
+
       const values = await queryEtherSwapValuesFromLock(
         swap,
         await multiLockProvider([999n]),
@@ -276,9 +279,29 @@ describe('ContractUtils', () => {
         multiLockTransactionHash,
         true,
         99,
+        logger,
       );
 
       expect(values.amount).toEqual(999n);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Recorded log index 99'),
+      );
+    });
+
+    test('should not warn when the logIndex resolves', async () => {
+      const logger = { warn: jest.fn() } as unknown as Logger;
+
+      await queryEtherSwapValuesFromLock(
+        swap,
+        await multiLockProvider([1n, 999n]),
+        etherSwap,
+        multiLockTransactionHash,
+        true,
+        2,
+        logger,
+      );
+
+      expect(logger.warn).not.toHaveBeenCalled();
     });
   });
 

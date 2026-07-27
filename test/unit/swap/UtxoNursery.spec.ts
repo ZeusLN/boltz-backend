@@ -673,6 +673,38 @@ describe('UtxoNursery', () => {
       expect(lockupListener).not.toHaveBeenCalled();
     });
 
+    test('should not act when the lockup write was rejected', async () => {
+      const checkSwapOutputs = nursery['checkOutputs'];
+      const transaction = parseTx(sampleTransactions.lockup);
+
+      submarineSwap({
+        expectedAmount: Number(transaction.getOutput(0).amount),
+        lockupTransactionId: undefined,
+        status: SwapUpdateEvent.SwapCreated,
+      });
+      // The swap was taken over between the guard and the write
+      mockSetLockupTransaction.mockResolvedValueOnce({
+        outcome: LockupWriteOutcome.Rejected,
+        swap: mockGetSwapResult,
+      });
+
+      const lockupListener = jest.fn();
+      const failedListener = jest.fn();
+      nursery.on('swap.lockup', lockupListener);
+      nursery.on('swap.lockup.failed', failedListener);
+
+      await checkSwapOutputs(
+        btcChainClient,
+        btcWallet,
+        transaction,
+        TransactionStatus.Confirmed,
+      );
+
+      expect(mockSetLockupTransaction).toHaveBeenCalledTimes(1);
+      expect(lockupListener).not.toHaveBeenCalled();
+      expect(failedListener).not.toHaveBeenCalled();
+    });
+
     const chainLockupTransaction = () => {
       const ourKeys = makeKeys();
       const theirPublicKey = Buffer.from(makeKeys().publicKey);
@@ -798,6 +830,48 @@ describe('UtxoNursery', () => {
         ChainSwapRepository.setUserLockupTransaction,
       ).not.toHaveBeenCalled();
       expect(lockupListener).not.toHaveBeenCalled();
+
+      getOutputValueSpy.mockRestore();
+    });
+
+    test('should not act when the chain swap lockup write was rejected', async () => {
+      const checkChainSwapTransaction = nursery['checkChainSwapTransaction'];
+      const tx = chainLockupTransaction();
+      const mockChainSwap = chainSwap(
+        tx,
+        { expectedAmount: 123, transactionId: undefined },
+        SwapUpdateEvent.SwapCreated,
+      );
+
+      // The swap was taken over between the guard and the write
+      ChainSwapRepository.setUserLockupTransaction = jest
+        .fn()
+        .mockResolvedValue({
+          outcome: LockupWriteOutcome.Rejected,
+          swap: mockChainSwap,
+        });
+      const getOutputValueSpy = jest
+        .spyOn(Core, 'getOutputValue')
+        .mockReturnValue(123);
+
+      const lockupListener = jest.fn();
+      const failedListener = jest.fn();
+      nursery.on('chainSwap.lockup', lockupListener);
+      nursery.on('chainSwap.lockup.failed', failedListener);
+
+      await checkChainSwapTransaction(
+        mockChainSwap as any,
+        btcChainClient,
+        btcWallet,
+        tx.transaction,
+        TransactionStatus.Confirmed,
+      );
+
+      expect(
+        ChainSwapRepository.setUserLockupTransaction,
+      ).toHaveBeenCalledTimes(1);
+      expect(lockupListener).not.toHaveBeenCalled();
+      expect(failedListener).not.toHaveBeenCalled();
 
       getOutputValueSpy.mockRestore();
     });
@@ -1019,6 +1093,7 @@ describe('UtxoNursery', () => {
       expect(lockupListener).toHaveBeenCalledWith({
         swap: mockChainSwap,
         transaction: tx.transaction,
+        lockupTransactionVout: 0,
         confirmed: false,
       });
 

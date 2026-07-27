@@ -570,6 +570,81 @@ describe('Renegotiator', () => {
         );
       });
 
+      test.each`
+        name          | offset | shouldFind
+        ${'resolves'} | ${0}   | ${true}
+        ${'is stale'} | ${100} | ${false}
+      `(
+        'should select the lockup event by the recorded log index when it $name',
+        async ({ offset, shouldFind }) => {
+          const { etherBase, signer } = await getSigner();
+          const { etherSwap } = await getContracts(etherBase);
+
+          const preimageHash = randomBytes(32);
+          const timelock = 21;
+          const amount = 212_212n;
+
+          const transaction = await etherSwap['lock(bytes32,address,uint256)'](
+            preimageHash,
+            await signer.getAddress(),
+            timelock,
+            {
+              value: amount,
+            },
+          );
+          const receipt = await transaction.wait(1);
+          const logIndex = receipt!.logs[0].index;
+
+          ChainSwapRepository.getChainSwap = jest.fn().mockResolvedValue({
+            chainSwap: {},
+            acceptZeroConf: true,
+            receivingData: {
+              symbol: 'RBTC',
+              amount: 100_000,
+              transactionId: transaction.hash,
+              transactionVout: logIndex + offset,
+            },
+            sendingData: {
+              symbol: 'BTC',
+            },
+          });
+          ChainSwapRepository.setExpectedAmounts = jest
+            .fn()
+            .mockImplementation(async (swap) => swap);
+
+          negotiator['validateEligibility'] = jest
+            .fn()
+            .mockImplementation(async () => {});
+
+          const acceptQuote = negotiator.acceptQuote('someId', 94_877);
+
+          if (!shouldFind) {
+            await expect(acceptQuote).rejects.toEqual(
+              Errors.LOCKUP_NOT_REJECTED(),
+            );
+            expect(
+              swapNursery.ethereumNurseries[0].checkEtherSwapLockup,
+            ).not.toHaveBeenCalled();
+            return;
+          }
+
+          await acceptQuote;
+
+          expect(
+            swapNursery.ethereumNurseries[0].checkEtherSwapLockup,
+          ).toHaveBeenCalledTimes(1);
+          expect(
+            swapNursery.ethereumNurseries[0].checkEtherSwapLockup,
+          ).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.anything(),
+            expect.objectContaining({ amount, timelock, preimageHash }),
+            logIndex,
+            { allowLockupFailedUpdate: true },
+          );
+        },
+      );
+
       test('should handle ERC20 lockups', async () => {
         const { etherBase, signer } = await getSigner();
         const { token, erc20Swap } = await getContracts(etherBase);

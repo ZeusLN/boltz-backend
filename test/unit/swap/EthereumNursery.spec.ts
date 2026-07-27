@@ -139,6 +139,8 @@ const mockOnContractEventHandler = jest
   });
 
 const mockAddress = '0x735Ec659CB2E2D2B778F8D4178ce2a521D617119';
+// Has to differ from the claim address to catch the two being mixed up
+const mockRefundAddress = '0x9F8C2A1b3D4e5f60718293A4b5c6d7e8F9a0b1c2';
 let mockHasSymbolSymbols = [networks.Ethereum.symbol, 'USDT'];
 const mockHasSymbol = jest
   .fn()
@@ -543,7 +545,7 @@ describe('EthereumNursery', () => {
 
     const suppliedEtherSwapValues = {
       claimAddress: mockAddress,
-      refundAddress: mockAddress,
+      refundAddress: mockRefundAddress,
       amount: BigInt('100000000000'),
       preimageHash: getHexString(examplePreimageHash),
       timelock: mockGetSwapResult.timeoutBlockHeight,
@@ -824,7 +826,7 @@ describe('EthereumNursery', () => {
 
     const etherSwapValues = {
       claimAddress: mockAddress,
-      refundAddress: mockAddress,
+      refundAddress: mockRefundAddress,
       amount: BigInt('99999999999'),
       preimageHash: getHexString(examplePreimageHash),
       timelock: mockGetSwapResult.timeoutBlockHeight,
@@ -1024,7 +1026,7 @@ describe('EthereumNursery', () => {
     const suppliedERC20SwapValues = {
       amount: BigInt('1000'),
       claimAddress: mockAddress,
-      refundAddress: mockAddress,
+      refundAddress: mockRefundAddress,
       tokenAddress: mockTokenAddress,
       timelock: swap.timeoutBlockHeight,
       preimageHash: getHexString(examplePreimageHash),
@@ -1047,6 +1049,67 @@ describe('EthereumNursery', () => {
     expect(failedListener).not.toHaveBeenCalled();
   });
 
+  test('should only overwrite an already set ERC20 refund address on valid lockups', async () => {
+    const existingRefundAddress = '0x6981698B1275eD7727B7F5C3C54d9FE4d8ffEd5E';
+
+    mockGetSwapResult = {
+      pair: 'BTC/USDT',
+      expectedAmount: 10,
+      type: SwapType.Submarine,
+      orderSide: OrderSide.BUY,
+      timeoutBlockHeight: 11102222,
+      refundAddress: existingRefundAddress,
+    };
+
+    const suppliedERC20SwapValues = {
+      amount: BigInt('1000'),
+      claimAddress: mockAddress,
+      refundAddress: mockRefundAddress,
+      tokenAddress: mockTokenAddress,
+      timelock: mockGetSwapResult.timeoutBlockHeight,
+      preimageHash: getHexString(examplePreimageHash),
+    } as any;
+
+    let lockupFailed = 0;
+    nursery.once('lockup.failed', () => {
+      lockupFailed += 1;
+    });
+
+    suppliedERC20SwapValues.claimAddress = 'not-us';
+    await emitErc20Lockup({
+      transaction: exampleTransaction,
+      logIndex: 21,
+      erc20SwapValues: suppliedERC20SwapValues,
+    });
+
+    expect(lockupFailed).toEqual(1);
+    expect(mockSetRefundAddress).not.toHaveBeenCalled();
+
+    suppliedERC20SwapValues.claimAddress = mockAddress;
+
+    let lockupEmitted = false;
+    nursery.once('erc20.lockup', () => {
+      lockupEmitted = true;
+    });
+
+    await emitErc20Lockup({
+      transaction: exampleTransaction,
+      logIndex: 21,
+      erc20SwapValues: suppliedERC20SwapValues,
+    });
+
+    expect(lockupEmitted).toEqual(true);
+    expect(mockSetRefundAddress).toHaveBeenCalledTimes(1);
+    expect(mockSetRefundAddress).toHaveBeenCalledWith(
+      {
+        ...mockGetSwapResult,
+        onchainAmount: 10,
+        lockupTransactionId: exampleTransaction.hash,
+      },
+      suppliedERC20SwapValues.refundAddress,
+    );
+  });
+
   test('should listen for ERC20Swap lockup events', async () => {
     let lockupEmitted = false;
     let lockupFailed = 0;
@@ -1062,7 +1125,7 @@ describe('EthereumNursery', () => {
     const suppliedERC20SwapValues = {
       amount: BigInt('1000'),
       claimAddress: mockAddress,
-      refundAddress: mockAddress,
+      refundAddress: mockRefundAddress,
       tokenAddress: mockTokenAddress,
       timelock: mockGetSwapResult.timeoutBlockHeight,
       preimageHash: getHexString(examplePreimageHash),

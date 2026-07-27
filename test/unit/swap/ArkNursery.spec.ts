@@ -670,6 +670,79 @@ describe('ArkNursery', () => {
       expect(lockupListener).not.toHaveBeenCalled();
       expect(failedListener).not.toHaveBeenCalled();
     });
+
+    test('should not act when the chain swap lockup write was rejected', async () => {
+      const chainSwap = {
+        id: 'chain',
+        type: SwapType.Chain,
+        status: SwapUpdateEvent.SwapCreated,
+        receivingData: {
+          symbol: 'ARK',
+          expectedAmount: 100000,
+        },
+      };
+
+      ChainSwapRepository.getChainSwapByData = jest
+        .fn()
+        .mockResolvedValue(chainSwap);
+      // The swap was taken over between the guard and the write
+      ChainSwapRepository.setUserLockupTransaction = jest
+        .fn()
+        .mockResolvedValue({
+          outcome: LockupWriteOutcome.Rejected,
+          swap: chainSwap,
+        });
+
+      const lockupListener = jest.fn();
+      const failedListener = jest.fn();
+      nursery.on('chainSwap.lockup', lockupListener);
+      nursery.on('chainSwap.lockup.failed', failedListener);
+
+      await nursery.checkChainSwapLockup(mockArkNode, {
+        address: 'ark_chain_address',
+        txId: 'lockup-tx',
+        vout: 0,
+        amount: 100000,
+      } as any);
+
+      expect(
+        ChainSwapRepository.setUserLockupTransaction,
+      ).toHaveBeenCalledTimes(1);
+      expect(lockupListener).not.toHaveBeenCalled();
+      expect(failedListener).not.toHaveBeenCalled();
+    });
+
+    test('should not act when the submarine lockup write was rejected', async () => {
+      const swap = {
+        id: 'swap123',
+        type: SwapType.Submarine,
+        expectedAmount: 100000,
+        status: SwapUpdateEvent.SwapCreated,
+      };
+
+      SwapRepository.getSwap = jest.fn().mockResolvedValue(swap);
+      // The swap was taken over between the guard and the write
+      SwapRepository.setLockupTransaction = jest.fn().mockResolvedValue({
+        outcome: LockupWriteOutcome.Rejected,
+        swap,
+      });
+
+      const lockupListener = jest.fn();
+      const failedListener = jest.fn();
+      nursery.on('swap.lockup', lockupListener);
+      nursery.on('swap.lockup.failed', failedListener);
+
+      await nursery['checkSubmarineLockup'](mockArkNode, {
+        address: 'ark_address',
+        txId: 'lockup-tx',
+        vout: 0,
+        amount: 100000,
+      } as any);
+
+      expect(SwapRepository.setLockupTransaction).toHaveBeenCalledTimes(1);
+      expect(lockupListener).not.toHaveBeenCalled();
+      expect(failedListener).not.toHaveBeenCalled();
+    });
   });
 
   describe('checkSubmarineLockup', () => {

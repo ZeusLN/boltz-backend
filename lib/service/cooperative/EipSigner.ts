@@ -146,6 +146,7 @@ class EipSigner {
             lockupTransactionId,
             true,
             lockupLogIndex ?? undefined,
+            this.logger,
           )
         : await queryERC20SwapValuesFromLock(
             swap,
@@ -154,6 +155,7 @@ class EipSigner {
             lockupTransactionId,
             true,
             lockupLogIndex ?? undefined,
+            this.logger,
           );
 
       await EipSigner.setRefundSignatureCreated(swap);

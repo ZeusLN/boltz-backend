@@ -163,6 +163,22 @@ describe('SwapRepository', () => {
       expect(result.swap.lockupTransactionVout).toEqual(0);
     });
 
+    test('should reject when the swap does not exist anymore', async () => {
+      const swap = await Swap.create(createSubmarineSwapData());
+      await swap.destroy();
+
+      const result = await SwapRepository.setLockupTransaction(
+        swap,
+        'lockup-a',
+        100_000,
+        SwapUpdateEvent.TransactionConfirmed,
+        0,
+      );
+
+      expect(result.outcome).toEqual(LockupWriteOutcome.Rejected);
+      expect(result.swap).toEqual(swap);
+    });
+
     test.each([
       SwapUpdateEvent.InvoicePending,
       SwapUpdateEvent.InvoicePaid,

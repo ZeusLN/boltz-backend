@@ -61,6 +61,7 @@ class UtxoNursery extends TypedEventEmitter<{
   'swap.lockup': {
     swap: Swap;
     transaction: Transaction | LiquidTransaction;
+    lockupTransactionVout: number;
     confirmed: boolean;
   };
 
@@ -79,6 +80,7 @@ class UtxoNursery extends TypedEventEmitter<{
   'chainSwap.lockup': {
     swap: ChainSwapInfo;
     transaction: Transaction | LiquidTransaction;
+    lockupTransactionVout: number;
     confirmed: boolean;
   };
   'chainSwap.lockup.failed': {
@@ -294,6 +296,7 @@ class UtxoNursery extends TypedEventEmitter<{
     this.emit('chainSwap.lockup', {
       swap,
       transaction,
+      lockupTransactionVout: swapOutput.vout,
       confirmed: status === TransactionStatus.Confirmed,
     });
   };
@@ -874,6 +877,7 @@ class UtxoNursery extends TypedEventEmitter<{
 
     this.emit('swap.lockup', {
       transaction,
+      lockupTransactionVout: swapOutput.vout,
       confirmed: status === TransactionStatus.Confirmed,
       swap: updatedSwap,
     });
