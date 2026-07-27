@@ -518,6 +518,10 @@ class DeferredClaimer extends CoopSignerBase<{
                 ? (swap.swap as Swap).lockupTransactionId!
                 : (swap.swap as ChainSwapInfo).receivingData
                     .lockupTransactionId!;
+            const logIndex =
+              swap.swap.type === SwapType.Submarine
+                ? (swap.swap as Swap).lockupTransactionVout
+                : (swap.swap as ChainSwapInfo).receivingData.transactionVout;
 
             return await queryEtherSwapValuesFromLock(
               swap.swap,
@@ -525,6 +529,8 @@ class DeferredClaimer extends CoopSignerBase<{
               contracts.etherSwap,
               transactionId,
               true,
+              logIndex ?? undefined,
+              this.logger,
             );
           },
           RPC_LOOKUP_CONCURRENCY,
@@ -568,6 +574,10 @@ class DeferredClaimer extends CoopSignerBase<{
                 ? (swap.swap as Swap).lockupTransactionId!
                 : (swap.swap as ChainSwapInfo).receivingData
                     .lockupTransactionId!;
+            const logIndex =
+              swap.swap.type === SwapType.Submarine
+                ? (swap.swap as Swap).lockupTransactionVout
+                : (swap.swap as ChainSwapInfo).receivingData.transactionVout;
 
             return await queryERC20SwapValuesFromLock(
               swap.swap,
@@ -575,6 +585,8 @@ class DeferredClaimer extends CoopSignerBase<{
               contracts.erc20Swap,
               transactionId,
               true,
+              logIndex ?? undefined,
+              this.logger,
             );
           },
           RPC_LOOKUP_CONCURRENCY,

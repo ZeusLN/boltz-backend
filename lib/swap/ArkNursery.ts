@@ -16,6 +16,7 @@ import {
   swapTypeToPrettyString,
 } from '../consts/Enums';
 import TypedEventEmitter from '../consts/TypedEventEmitter';
+import { LockupWriteOutcome } from '../db/LockupIdentity';
 import type ReverseSwap from '../db/models/ReverseSwap';
 import type Swap from '../db/models/Swap';
 import type {
@@ -26,6 +27,7 @@ import ChainSwapRepository from '../db/repositories/ChainSwapRepository';
 import ReverseSwapRepository from '../db/repositories/ReverseSwapRepository';
 import SwapRepository from '../db/repositories/SwapRepository';
 import type { Currency } from '../wallet/WalletManager';
+import { shouldIgnoreCompetingLockup } from './CompetingLockup';
 import Errors from './Errors';
 import type OverpaymentProtector from './OverpaymentProtector';
 
@@ -36,6 +38,7 @@ class ArkNursery extends TypedEventEmitter<{
   'swap.lockup': {
     swap: Swap;
     lockupTransactionId: string;
+    lockupTransactionVout: number;
   };
   'swap.lockup.failed': {
     swap: Swap;
@@ -51,6 +54,7 @@ class ArkNursery extends TypedEventEmitter<{
   'chainSwap.lockup': {
     swap: ChainSwapInfo;
     lockupTransactionId: string;
+    lockupTransactionVout: number;
   };
   'chainSwap.lockup.failed': {
     swap: ChainSwapInfo;
@@ -179,14 +183,36 @@ class ArkNursery extends TypedEventEmitter<{
     this.logger.info(
       `Found ${ArkClient.symbol} lockup vHTLC for ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}: ${vHtlc.txId}:${vHtlc.vout}`,
     );
-    swap = await ChainSwapRepository.setUserLockupTransaction(
+    if (
+      shouldIgnoreCompetingLockup({
+        prevId: swap.receivingData.transactionId,
+        prevVout: swap.receivingData.transactionVout,
+        incomingId: vHtlc.txId,
+        incomingVout: vHtlc.vout,
+        recordedStatus: swap.status as SwapUpdateEvent,
+      })
+    ) {
+      this.logger.debug(
+        `Ignoring competing lockup vHTLC ${vHtlc.txId} of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}`,
+      );
+      return;
+    }
+
+    const lockupResult = await ChainSwapRepository.setUserLockupTransaction(
       swap,
       vHtlc.txId,
       vHtlc.amount,
-      true,
+      SwapUpdateEvent.TransactionConfirmed,
       vHtlc.vout,
       options,
     );
+    if (lockupResult.outcome === LockupWriteOutcome.Rejected) {
+      this.logger.debug(
+        `Ignoring lockup vHTLC ${vHtlc.txId} of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id} because another lockup owns it`,
+      );
+      return;
+    }
+    swap = lockupResult.swap;
 
     if (!ChainSwapRepository.canActOnUserLockup(swap, options)) {
       this.logger.debug(
@@ -226,6 +252,7 @@ class ArkNursery extends TypedEventEmitter<{
     this.emit('chainSwap.lockup', {
       swap,
       lockupTransactionId: vHtlc.txId,
+      lockupTransactionVout: vHtlc.vout,
     });
   };
 
@@ -280,14 +307,36 @@ class ArkNursery extends TypedEventEmitter<{
       `Found ${ArkClient.symbol} lockup vHTLC for ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}: ${vHtlc.txId}:${vHtlc.vout}`,
     );
 
-    swap = await SwapRepository.setLockupTransaction(
+    if (
+      shouldIgnoreCompetingLockup({
+        prevId: swap.lockupTransactionId,
+        prevVout: swap.lockupTransactionVout,
+        incomingId: vHtlc.txId,
+        incomingVout: vHtlc.vout,
+        recordedStatus: swap.status as SwapUpdateEvent,
+      })
+    ) {
+      this.logger.debug(
+        `Ignoring competing lockup vHTLC ${vHtlc.txId} of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id}`,
+      );
+      return;
+    }
+
+    const lockupResult = await SwapRepository.setLockupTransaction(
       swap,
       vHtlc.txId,
       vHtlc.amount,
       // TODO: how to handle out of round?
-      true,
+      SwapUpdateEvent.TransactionConfirmed,
       vHtlc.vout,
     );
+    if (lockupResult.outcome === LockupWriteOutcome.Rejected) {
+      this.logger.debug(
+        `Ignoring lockup vHTLC ${vHtlc.txId} of ${swapTypeToPrettyString(swap.type)} Swap ${swap.id} because another lockup owns it`,
+      );
+      return;
+    }
+    swap = lockupResult.swap;
 
     if (swap.expectedAmount! > vHtlc.amount) {
       this.emit('swap.lockup.failed', {
@@ -316,6 +365,7 @@ class ArkNursery extends TypedEventEmitter<{
     this.emit('swap.lockup', {
       swap,
       lockupTransactionId: vHtlc.txId,
+      lockupTransactionVout: vHtlc.vout,
     });
   };
 
