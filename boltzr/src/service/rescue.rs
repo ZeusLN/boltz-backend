@@ -944,15 +944,13 @@ impl SwapRescue {
         s: Swap,
     ) -> Result<RescuableSwap> {
         let chain_symbol = s.chain_symbol()?;
-        let wallet = self.get_wallet(&chain_symbol)?;
 
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.refundPublicKey, &s.id)?,
-            Self::server_public_key(
+            self.server_public_key(
                 secp,
                 &chain_symbol,
-                &wallet,
                 &s.id,
                 s.keyIndex,
                 s.redeemScript.as_ref(),
@@ -960,7 +958,7 @@ impl SwapRescue {
                 &s.refundPublicKey,
                 &s.lockupAddress,
             )?,
-            Self::derive_blinding_key(&wallet, &s.id, &chain_symbol, &s.lockupAddress)?,
+            self.derive_blinding_key(&s.id, &chain_symbol, &s.lockupAddress)?,
         )
             .try_into()
     }
@@ -971,15 +969,12 @@ impl SwapRescue {
         keys_map: &HashMap<String, u32>,
         s: ChainSwapInfo,
     ) -> Result<RescuableSwap> {
-        let wallet = self.get_wallet(&s.receiving().symbol)?;
-
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.receiving().theirPublicKey, &s.id())?,
-            Self::server_public_key(
+            self.server_public_key(
                 secp,
                 &s.receiving().symbol,
-                &wallet,
                 &s.id(),
                 s.receiving().keyIndex,
                 s.receiving().swapTree.as_ref(),
@@ -987,12 +982,7 @@ impl SwapRescue {
                 &s.receiving().theirPublicKey,
                 &s.receiving().lockupAddress,
             )?,
-            Self::derive_blinding_key(
-                &wallet,
-                &s.id(),
-                &s.receiving().symbol,
-                &s.receiving().lockupAddress,
-            )?,
+            self.derive_blinding_key(&s.id(), &s.receiving().symbol, &s.receiving().lockupAddress)?,
         )
             .try_into()
     }
@@ -1004,15 +994,13 @@ impl SwapRescue {
         s: Swap,
     ) -> Result<RestorableSwap> {
         let chain_symbol = s.chain_symbol()?;
-        let wallet = self.get_wallet(&chain_symbol)?;
 
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.refundPublicKey, &s.id)?,
-            Self::server_public_key(
+            self.server_public_key(
                 secp,
                 &chain_symbol,
-                &wallet,
                 &s.id,
                 s.keyIndex,
                 s.redeemScript.as_ref(),
@@ -1020,7 +1008,7 @@ impl SwapRescue {
                 &s.refundPublicKey,
                 &s.lockupAddress,
             )?,
-            Self::derive_blinding_key(&wallet, &s.id, &chain_symbol, &s.lockupAddress)?,
+            self.derive_blinding_key(&s.id, &chain_symbol, &s.lockupAddress)?,
         )
             .try_into()
     }
@@ -1046,15 +1034,13 @@ impl SwapRescue {
         } else if let Some(key_index) =
             Self::lookup_optional_from_keys(keys_map, &sending_data.theirPublicKey)
         {
-            let sending_wallet = self.get_wallet(&sending_data.symbol)?;
             Some(ClaimDetails::Utxo(
                 (
                     &s,
                     key_index,
-                    Self::server_public_key(
+                    self.server_public_key(
                         secp,
                         &s.sending().symbol,
-                        &sending_wallet,
                         &s.id(),
                         s.sending().keyIndex,
                         s.sending().swapTree.as_ref(),
@@ -1062,8 +1048,7 @@ impl SwapRescue {
                         &s.sending().theirPublicKey,
                         &s.sending().lockupAddress,
                     )?,
-                    Self::derive_blinding_key(
-                        &sending_wallet,
+                    self.derive_blinding_key(
                         &s.id(),
                         &s.sending().symbol,
                         &s.sending().lockupAddress,
@@ -1076,15 +1061,13 @@ impl SwapRescue {
         };
 
         let refund_details = if let Some(key_index) = refund_key_index {
-            let receiving_wallet = self.get_wallet(&receiving_data.symbol)?;
             Some(RefundDetails::Utxo(Box::new(
                 (
                     receiving_data,
                     key_index,
-                    Self::server_public_key(
+                    self.server_public_key(
                         secp,
                         &s.receiving().symbol,
-                        &receiving_wallet,
                         &s.id(),
                         s.receiving().keyIndex,
                         s.receiving().swapTree.as_ref(),
@@ -1092,8 +1075,7 @@ impl SwapRescue {
                         &s.receiving().theirPublicKey,
                         &s.receiving().lockupAddress,
                     )?,
-                    Self::derive_blinding_key(
-                        &receiving_wallet,
+                    self.derive_blinding_key(
                         &s.id(),
                         &s.receiving().symbol,
                         &s.receiving().lockupAddress,
@@ -1143,15 +1125,12 @@ impl SwapRescue {
             });
         }
 
-        let wallet = self.get_wallet(&chain_symbol)?;
-
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.claimPublicKey, &s.id())?,
-            Self::server_public_key(
+            self.server_public_key(
                 secp,
                 &chain_symbol,
-                &wallet,
                 &s.id,
                 s.keyIndex,
                 s.redeemScript.as_ref(),
@@ -1159,7 +1138,7 @@ impl SwapRescue {
                 &s.claimPublicKey,
                 &s.lockupAddress,
             )?,
-            Self::derive_blinding_key(&wallet, &s.id, &chain_symbol, &s.lockupAddress)?,
+            self.derive_blinding_key(&s.id, &chain_symbol, &s.lockupAddress)?,
         )
             .try_into()
     }
@@ -1181,9 +1160,9 @@ impl SwapRescue {
     /// original key.
     #[allow(clippy::too_many_arguments)]
     fn server_public_key(
+        &self,
         secp: &Secp256k1<secp256k1::All>,
         symbol: &str,
-        wallet: &Arc<dyn Wallet + Send + Sync>,
         id: &str,
         key_index: Option<i32>,
         tree_json: Option<&String>,
@@ -1208,7 +1187,10 @@ impl SwapRescue {
             );
         }
 
-        Self::derive_our_public_key(secp, symbol, wallet, id, key_index)
+        // The wallet is only needed for the fallback; fetched lazily so
+        // recovery also works for currencies without a wallet configured
+        let wallet = self.get_wallet(symbol)?;
+        Self::derive_our_public_key(secp, symbol, &wallet, id, key_index)
     }
 
     /// Recovers the original server public key from the swap's taproot tree.
@@ -1311,16 +1293,12 @@ impl SwapRescue {
         }
     }
 
-    fn derive_blinding_key(
-        wallet: &Arc<dyn Wallet + Send + Sync>,
-        id: &str,
-        symbol: &str,
-        address: &str,
-    ) -> Result<Option<String>> {
+    fn derive_blinding_key(&self, id: &str, symbol: &str, address: &str) -> Result<Option<String>> {
         if symbol != crate::chain::elements_client::SYMBOL {
             return Ok(None);
         }
 
+        let wallet = self.get_wallet(symbol)?;
         Ok(Some(hex::encode(
             wallet
                 .derive_blinding_key(wallet.decode_address(address)?)
@@ -1509,6 +1487,84 @@ mod test {
                     Some(hex::encode(server_key.public_key().serialize()))
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_restorable_swap_recovery_without_wallet() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::hashes::{Hash, hash160};
+        use boltz_core::musig::Musig;
+
+        let secp = Secp256k1::default();
+
+        let server_key = Musig::convert_keypair([0x11u8; 32]).unwrap();
+        let user_key = Musig::convert_keypair([0x22u8; 32]).unwrap();
+        let user_key_hex = hex::encode(user_key.public_key().serialize());
+
+        let to_bitcoin_xonly = |key: &boltz_core::musig::MusigPublicKey| {
+            bitcoin::XOnlyPublicKey::from_slice(&key.x_only_public_key().0.serialize()).unwrap()
+        };
+
+        let tree = boltz_core::bitcoin::swap_tree(
+            hash160::Hash::hash(b"such preimage"),
+            &to_bitcoin_xonly(&server_key.public_key()),
+            &to_bitcoin_xonly(&user_key.public_key()),
+            LockTime::from_height(800_000).unwrap(),
+        );
+        let internal_key = bitcoin::XOnlyPublicKey::from_slice(
+            &Musig::aggregate_public_keys(&[server_key.public_key(), user_key.public_key()])
+                .serialize(),
+        )
+        .unwrap();
+        let spend_info = tree.build().unwrap().finalize(&secp, internal_key).unwrap();
+        let lockup_address =
+            bitcoin::Address::p2tr_tweaked(spend_info.output_key(), bitcoin::Network::Bitcoin);
+
+        let swap = Swap {
+            pair: "BTC/BTC".to_string(),
+            refundPublicKey: Some(user_key_hex.clone()),
+            redeemScript: Some(serde_json::to_string(&tree).unwrap()),
+            lockupAddress: lockup_address.to_string(),
+            ..get_test_swap(String::new())
+        };
+
+        // A BTC currency WITHOUT a wallet: recovery from the tree must
+        // still work as the wallet is only needed for fallback derivation
+        let rescue = SwapRescue::new(
+            Cache::Memory(MemCache::new()),
+            Arc::new(MockSwapHelper::new()),
+            Arc::new(MockChainSwapHelper::new()),
+            Arc::new(MockReverseSwapHelper::new()),
+            Arc::new(HashMap::from([(
+                "BTC".to_string(),
+                Currency {
+                    network: Network::Regtest,
+                    wallet: None,
+                    chain: None,
+                    cln: None,
+                    lnds: HashMap::new(),
+                    evm_manager: None,
+                },
+            )])),
+            Arc::new(MockSwapMetadataHelper::new()),
+        );
+
+        let keys_map = HashMap::from([(user_key_hex, 21u32)]);
+        let restored = rescue
+            .create_restorable_swap(&secp, &keys_map, swap)
+            .unwrap();
+
+        match restored.refund_details {
+            Some(RefundDetails::Utxo(details)) => {
+                assert_eq!(
+                    details.server_public_key,
+                    hex::encode(server_key.public_key().serialize())
+                );
+                assert_eq!(details.key_index, 21);
+                assert_eq!(details.blinding_key, None);
+            }
+            _ => panic!("expected UTXO refund details"),
         }
     }
 
@@ -2361,10 +2417,30 @@ swapTree: Some(tree.clone()),
         );
     }
 
+    fn get_liquid_rescue() -> SwapRescue {
+        SwapRescue::new(
+            Cache::Memory(MemCache::new()),
+            Arc::new(MockSwapHelper::new()),
+            Arc::new(MockChainSwapHelper::new()),
+            Arc::new(MockReverseSwapHelper::new()),
+            Arc::new(HashMap::from([(
+                crate::chain::elements_client::SYMBOL.to_string(),
+                Currency {
+                    network: Network::Regtest,
+                    wallet: Some(get_liquid_wallet()),
+                    chain: None,
+                    cln: None,
+                    lnds: HashMap::new(),
+                    evm_manager: None,
+                },
+            )])),
+            Arc::new(MockSwapMetadataHelper::new()),
+        )
+    }
+
     #[tokio::test]
     async fn test_derive_blinding_key() {
-        assert_eq!(SwapRescue::derive_blinding_key(
-            &get_liquid_wallet(),
+        assert_eq!(get_liquid_rescue().derive_blinding_key(
             "",
             crate::chain::elements_client::SYMBOL,
             "el1pqt0dzt0mh2gxxvrezmzqexg0n66rkmd5997wn255wmfpqdegd2qyh284rq5v4h2vtj0ey3399k8d8v8qwsphj3qt4cf9zj08h0zqhraf0qcqltm5nfxq",
@@ -2374,7 +2450,8 @@ swapTree: Some(tree.clone()),
     #[tokio::test]
     async fn test_derive_blinding_key_non_liquid() {
         assert!(
-            SwapRescue::derive_blinding_key(&get_liquid_wallet(), "", "BTC", "")
+            get_liquid_rescue()
+                .derive_blinding_key("", "BTC", "")
                 .unwrap()
                 .is_none()
         );
