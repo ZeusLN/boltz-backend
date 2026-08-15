@@ -15,8 +15,9 @@ use boltz_cache::Cache;
 use diesel::{BoolExpressionMethods, ExpressionMethods};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument, trace, warn};
 
 trait Identifiable {
     fn id(&self) -> &str;
@@ -948,7 +949,17 @@ impl SwapRescue {
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.refundPublicKey, &s.id)?,
-            Self::derive_our_public_key(secp, &chain_symbol, &wallet, &s.id(), s.keyIndex)?,
+            Self::server_public_key(
+                secp,
+                &chain_symbol,
+                &wallet,
+                &s.id,
+                s.keyIndex,
+                s.redeemScript.as_ref(),
+                true,
+                &s.refundPublicKey,
+                &s.lockupAddress,
+            )?,
             Self::derive_blinding_key(&wallet, &s.id, &chain_symbol, &s.lockupAddress)?,
         )
             .try_into()
@@ -965,12 +976,16 @@ impl SwapRescue {
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.receiving().theirPublicKey, &s.id())?,
-            Self::derive_our_public_key(
+            Self::server_public_key(
                 secp,
                 &s.receiving().symbol,
                 &wallet,
                 &s.id(),
                 s.receiving().keyIndex,
+                s.receiving().swapTree.as_ref(),
+                true,
+                &s.receiving().theirPublicKey,
+                &s.receiving().lockupAddress,
             )?,
             Self::derive_blinding_key(
                 &wallet,
@@ -994,7 +1009,17 @@ impl SwapRescue {
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.refundPublicKey, &s.id)?,
-            Self::derive_our_public_key(secp, &chain_symbol, &wallet, &s.id(), s.keyIndex)?,
+            Self::server_public_key(
+                secp,
+                &chain_symbol,
+                &wallet,
+                &s.id,
+                s.keyIndex,
+                s.redeemScript.as_ref(),
+                true,
+                &s.refundPublicKey,
+                &s.lockupAddress,
+            )?,
             Self::derive_blinding_key(&wallet, &s.id, &chain_symbol, &s.lockupAddress)?,
         )
             .try_into()
@@ -1026,12 +1051,16 @@ impl SwapRescue {
                 (
                     &s,
                     key_index,
-                    Self::derive_our_public_key(
+                    Self::server_public_key(
                         secp,
                         &s.sending().symbol,
                         &sending_wallet,
                         &s.id(),
                         s.sending().keyIndex,
+                        s.sending().swapTree.as_ref(),
+                        false,
+                        &s.sending().theirPublicKey,
+                        &s.sending().lockupAddress,
                     )?,
                     Self::derive_blinding_key(
                         &sending_wallet,
@@ -1052,12 +1081,16 @@ impl SwapRescue {
                 (
                     receiving_data,
                     key_index,
-                    Self::derive_our_public_key(
+                    Self::server_public_key(
                         secp,
                         &s.receiving().symbol,
                         &receiving_wallet,
                         &s.id(),
                         s.receiving().keyIndex,
+                        s.receiving().swapTree.as_ref(),
+                        true,
+                        &s.receiving().theirPublicKey,
+                        &s.receiving().lockupAddress,
                     )?,
                     Self::derive_blinding_key(
                         &receiving_wallet,
@@ -1115,7 +1148,17 @@ impl SwapRescue {
         (
             &s,
             Self::lookup_from_keys(keys_map, &s.claimPublicKey, &s.id())?,
-            Self::derive_our_public_key(secp, &chain_symbol, &wallet, &s.id(), s.keyIndex)?,
+            Self::server_public_key(
+                secp,
+                &chain_symbol,
+                &wallet,
+                &s.id,
+                s.keyIndex,
+                s.redeemScript.as_ref(),
+                false,
+                &s.claimPublicKey,
+                &s.lockupAddress,
+            )?,
             Self::derive_blinding_key(&wallet, &s.id, &chain_symbol, &s.lockupAddress)?,
         )
             .try_into()
@@ -1128,6 +1171,117 @@ impl SwapRescue {
             .wallet
             .clone()
             .ok_or_else(|| anyhow!("no wallet for {}", symbol))
+    }
+
+    /// Returns the server public key of a swap, preferring recovery from the swap's
+    /// stored taproot tree over wallet derivation. The wallet seed may not be the one
+    /// the swap was created with (e.g. after a seed loss), in which case derivation
+    /// returns a key that does not match the on-chain lockup; the tree recovery result
+    /// is verified against the lockup address, so when it succeeds it is always the
+    /// original key.
+    #[allow(clippy::too_many_arguments)]
+    fn server_public_key(
+        secp: &Secp256k1<secp256k1::All>,
+        symbol: &str,
+        wallet: &Arc<dyn Wallet + Send + Sync>,
+        id: &str,
+        key_index: Option<i32>,
+        tree_json: Option<&String>,
+        server_is_claimer: bool,
+        their_public_key: &Option<String>,
+        lockup_address: &str,
+    ) -> Result<String> {
+        if let Some(tree_json) = tree_json {
+            if let Some(key) = Self::recover_server_public_key(
+                secp,
+                tree_json,
+                server_is_claimer,
+                their_public_key,
+                lockup_address,
+            ) {
+                return Ok(key);
+            }
+
+            warn!(
+                "Could not recover server public key of {} from its swap tree; falling back to wallet derivation",
+                id
+            );
+        }
+
+        Self::derive_our_public_key(secp, symbol, wallet, id, key_index)
+    }
+
+    /// Recovers the original server public key from the swap's taproot tree.
+    /// The x-only key is read from the leaf the server signs (claim leaf when the
+    /// server is the claimer, refund leaf when it is the refunder). The parity byte
+    /// is not committed to in the leaf script, so both candidates are checked by
+    /// aggregating with the client's key and comparing the tweaked MuSig2 output key
+    /// against the lockup address. Returns `None` when the swap is not a BTC taproot
+    /// swap or nothing matches (e.g. Liquid addresses, legacy redeem scripts).
+    fn recover_server_public_key(
+        secp: &Secp256k1<secp256k1::All>,
+        tree_json: &str,
+        server_is_claimer: bool,
+        their_public_key: &Option<String>,
+        lockup_address: &str,
+    ) -> Option<String> {
+        let tree: boltz_core::bitcoin::Tree = serde_json::from_str(tree_json).ok()?;
+        let server_xonly = if server_is_claimer {
+            tree.claim_pubkey()
+        } else {
+            tree.refund_pubkey()
+        }
+        .ok()?;
+
+        let their_key = boltz_core::musig::Musig::convert_pub_key(
+            &hex::decode(their_public_key.as_ref()?).ok()?,
+        )
+        .ok()?;
+
+        let lockup_script = bitcoin::Address::from_str(lockup_address)
+            .ok()?
+            .assume_checked()
+            .script_pubkey();
+        if !lockup_script.is_p2tr() {
+            return None;
+        }
+
+        for parity in [0x02u8, 0x03] {
+            let mut candidate_bytes = [0u8; 33];
+            candidate_bytes[0] = parity;
+            candidate_bytes[1..].copy_from_slice(&server_xonly.serialize());
+
+            let candidate = match boltz_core::musig::Musig::convert_pub_key(&candidate_bytes) {
+                Ok(key) => key,
+                Err(_) => continue,
+            };
+
+            // The order the keys were aggregated in at swap creation is not
+            // recorded, so both are tried; the address comparison disambiguates.
+            for keys in [[candidate, their_key], [their_key, candidate]] {
+                let internal_key = match bitcoin::XOnlyPublicKey::from_slice(
+                    &boltz_core::musig::Musig::aggregate_public_keys(&keys).serialize(),
+                ) {
+                    Ok(key) => key,
+                    Err(_) => continue,
+                };
+
+                let spend_info = match tree
+                    .build()
+                    .ok()
+                    .and_then(|builder| builder.finalize(secp, internal_key).ok())
+                {
+                    Some(info) => info,
+                    None => continue,
+                };
+
+                if bitcoin::ScriptBuf::new_p2tr_tweaked(spend_info.output_key()) == lockup_script {
+                    return Some(hex::encode(candidate_bytes));
+                }
+            }
+        }
+
+        None
     }
 
     fn derive_our_public_key(
@@ -1293,6 +1447,116 @@ mod test {
             onchainAmount: 150000,
             createdAt: chrono::NaiveDateTime::from_str("2025-01-01T23:58:00").unwrap(),
         }
+    }
+
+    #[test]
+    fn test_recover_server_public_key() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::hashes::{Hash, hash160};
+        use boltz_core::musig::Musig;
+
+        let secp = Secp256k1::default();
+
+        let server_key = Musig::convert_keypair([0x11u8; 32]).unwrap();
+        let user_key = Musig::convert_keypair([0x22u8; 32]).unwrap();
+
+        let to_bitcoin_xonly = |key: &boltz_core::musig::MusigPublicKey| {
+            bitcoin::XOnlyPublicKey::from_slice(&key.x_only_public_key().0.serialize()).unwrap()
+        };
+
+        let preimage_hash = hash160::Hash::hash(b"such preimage");
+
+        for server_is_claimer in [true, false] {
+            let (claim_key, refund_key) = if server_is_claimer {
+                (server_key.public_key(), user_key.public_key())
+            } else {
+                (user_key.public_key(), server_key.public_key())
+            };
+
+            let tree = boltz_core::bitcoin::swap_tree(
+                preimage_hash,
+                &to_bitcoin_xonly(&claim_key),
+                &to_bitcoin_xonly(&refund_key),
+                LockTime::from_height(800_000).unwrap(),
+            );
+            let tree_json = serde_json::to_string(&tree).unwrap();
+
+            // The recovery has to work regardless of the order the keys
+            // were aggregated in when the lockup address was created
+            for agg_keys in [
+                [server_key.public_key(), user_key.public_key()],
+                [user_key.public_key(), server_key.public_key()],
+            ] {
+                let internal_key = bitcoin::XOnlyPublicKey::from_slice(
+                    &Musig::aggregate_public_keys(&agg_keys).serialize(),
+                )
+                .unwrap();
+                let spend_info = tree.build().unwrap().finalize(&secp, internal_key).unwrap();
+                let address = bitcoin::Address::p2tr_tweaked(
+                    spend_info.output_key(),
+                    bitcoin::Network::Bitcoin,
+                );
+
+                let recovered = SwapRescue::recover_server_public_key(
+                    &secp,
+                    &tree_json,
+                    server_is_claimer,
+                    &Some(hex::encode(user_key.public_key().serialize())),
+                    &address.to_string(),
+                );
+                assert_eq!(
+                    recovered,
+                    Some(hex::encode(server_key.public_key().serialize()))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_recover_server_public_key_wrong_address() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::hashes::{Hash, hash160};
+        use boltz_core::musig::Musig;
+
+        let secp = Secp256k1::default();
+
+        let server_key = Musig::convert_keypair([0x11u8; 32]).unwrap();
+        let user_key = Musig::convert_keypair([0x22u8; 32]).unwrap();
+
+        let tree = boltz_core::bitcoin::swap_tree(
+            hash160::Hash::hash(b"such preimage"),
+            &bitcoin::XOnlyPublicKey::from_slice(
+                &server_key.public_key().x_only_public_key().0.serialize(),
+            )
+            .unwrap(),
+            &bitcoin::XOnlyPublicKey::from_slice(
+                &user_key.public_key().x_only_public_key().0.serialize(),
+            )
+            .unwrap(),
+            LockTime::from_height(800_000).unwrap(),
+        );
+
+        // A valid taproot address the tree and keys do not tweak to
+        let unrelated_address = bitcoin::Address::p2tr(
+            &secp,
+            bitcoin::XOnlyPublicKey::from_slice(
+                &user_key.public_key().x_only_public_key().0.serialize(),
+            )
+            .unwrap(),
+            None,
+            bitcoin::Network::Bitcoin,
+        );
+
+        assert_eq!(
+            SwapRescue::recover_server_public_key(
+                &secp,
+                &serde_json::to_string(&tree).unwrap(),
+                true,
+                &Some(hex::encode(user_key.public_key().serialize())),
+                &unrelated_address.to_string(),
+            ),
+            None
+        );
     }
 
     #[tokio::test]
