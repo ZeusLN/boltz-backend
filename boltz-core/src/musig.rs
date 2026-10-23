@@ -76,6 +76,9 @@ use std::marker::PhantomData;
 /// Re-export of `secp256k1::XOnlyPublicKey` used as the aggregated MuSig2 public key.
 pub use secp256k1::XOnlyPublicKey;
 
+/// Re-export of `secp256k1::PublicKey` used for MuSig2 participant keys.
+pub use secp256k1::PublicKey as MusigPublicKey;
+
 /// Errors produced by the MuSig2 builder.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -643,6 +646,12 @@ impl Musig {
     /// Parse a serialized (33- or 65-byte) compressed/uncompressed public key.
     pub fn convert_pub_key(pub_key: &[u8]) -> Result<PublicKey, MusigError> {
         Ok(PublicKey::from_slice(pub_key)?)
+    }
+
+    /// Aggregate public keys with MuSig2 key aggregation (order-sensitive)
+    /// and return the x-only aggregated key, without opening a signing session.
+    pub fn aggregate_public_keys(pub_keys: &[PublicKey]) -> XOnlyPublicKey {
+        KeyAggCache::new(&pub_keys.iter().collect::<Vec<_>>()).agg_pk()
     }
 
     /// Parse a serialized 66-byte MuSig2 public nonce.
